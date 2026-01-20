@@ -52,6 +52,17 @@ class RtcEngine private constructor() {
     }
 
     /**
+     * 设置信令服务器 WebSocket 地址
+     *
+     * 示例：
+     * - ws://47.105.48.196/ws/signaling
+     * - wss://your-domain.com/ws/signaling
+     */
+    fun setSignalingServerUrl(url: String) {
+        impl?.setSignalingServerUrl(url)
+    }
+
+    /**
      * 加入频道
      * 
      * @param channelId 频道ID
@@ -60,8 +71,6 @@ class RtcEngine private constructor() {
      */
     fun join(channelId: String, uid: String, token: String) {
         impl?.join(channelId, uid, token)
-        // 模拟用户加入事件（实际应由原生SDK触发）
-        eventHandler?.onUserJoined(uid, 0)
     }
 
     /**

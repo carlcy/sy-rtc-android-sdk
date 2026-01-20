@@ -139,7 +139,20 @@ internal class RtcEngineImpl(
     
     // 信令客户端
     private var signalingClient: SignalingClient? = null
-    private var signalingUrl: String = "ws://47.105.48.196:8087/ws/signaling"
+    // 默认走 Nginx（80/443），避免客户端直连 8087；生产建议改成你自己的域名 + wss
+    private var signalingUrl: String = "ws://47.105.48.196/ws/signaling"
+    
+    // 多人语聊（Mesh）：每个远端用户一条 PeerConnection（key=remoteUid）
+    private val offerSentByUid = ConcurrentHashMap<String, AtomicBoolean>()
+    private val remoteSdpSetByUid = ConcurrentHashMap<String, AtomicBoolean>()
+    private val pendingLocalIceByUid = ConcurrentHashMap<String, MutableList<IceCandidate>>() // 本地 ICE（在发 offer/answer 前缓存）
+    private val pendingRemoteIceByUid = ConcurrentHashMap<String, MutableList<IceCandidate>>() // 远端 ICE（在 setRemoteDescription 前缓存）
+
+    fun setSignalingServerUrl(url: String) {
+        if (url.isNotBlank()) {
+            signalingUrl = url
+        }
+    }
     
     init {
         audioManager = context.getSystemService(Context.AUDIO_SERVICE) as? AudioManager
@@ -197,6 +210,13 @@ internal class RtcEngineImpl(
         currentChannelId = channelId
         currentUid = uid
         currentToken = token
+        // 加入频道即视为“已加入”（即便房间内暂时没有其他人）
+        isJoined.set(true)
+        // 清理多人会话状态
+        offerSentByUid.clear()
+        remoteSdpSetByUid.clear()
+        pendingLocalIceByUid.clear()
+        pendingRemoteIceByUid.clear()
         
         Log.d(TAG, "加入频道: channelId=$channelId, uid=$uid")
         
@@ -211,136 +231,6 @@ internal class RtcEngineImpl(
             val audioSource = peerConnectionFactory?.createAudioSource(org.webrtc.MediaConstraints())
             localAudioTrack = peerConnectionFactory?.createAudioTrack("audio_track", audioSource)
             localAudioTrack?.setEnabled(true)
-            
-            // 创建 PeerConnection
-            val rtcConfig = PeerConnection.RTCConfiguration(
-                listOf(
-                    // 这里需要配置实际的 STUN/TURN 服务器
-                    // 实际使用时应该从服务器获取或配置
-                    PeerConnection.IceServer.builder("stun:stun.l.google.com:19302")
-                        .createIceServer()
-                )
-            )
-            rtcConfig.sdpSemantics = PeerConnection.SdpSemantics.UNIFIED_PLAN
-            
-            val peerConnectionObserver = object : PeerConnection.Observer {
-                override fun onSignalingChange(state: PeerConnection.SignalingState?) {
-                    Log.d(TAG, "SignalingState: $state")
-                }
-                
-                override fun onIceConnectionChange(state: PeerConnection.IceConnectionState?) {
-                    Log.d(TAG, "IceConnectionState: $state")
-                    if (state == PeerConnection.IceConnectionState.CONNECTED) {
-                        isJoined.set(true)
-                        Log.d(TAG, "已成功加入频道")
-                    } else if (state == PeerConnection.IceConnectionState.DISCONNECTED ||
-                               state == PeerConnection.IceConnectionState.FAILED ||
-                               state == PeerConnection.IceConnectionState.CLOSED) {
-                        isJoined.set(false)
-                        Log.d(TAG, "已离开频道")
-                    }
-                }
-                
-                override fun onIceGatheringChange(state: PeerConnection.IceGatheringState?) {
-                    Log.d(TAG, "IceGatheringState: $state")
-                }
-                
-                override fun onIceCandidate(candidate: IceCandidate?) {
-                    Log.d(TAG, "IceCandidate: $candidate")
-                    // 发送 ICE candidate 到信令服务器
-                    candidate?.let {
-                        signalingClient?.sendIceCandidate(
-                            it.sdp,
-                            it.sdpMLineIndex,
-                            it.sdpMid ?: ""
-                        )
-                    }
-                }
-                
-                override fun onIceCandidatesRemoved(candidates: Array<out IceCandidate>?) {
-                    Log.d(TAG, "IceCandidatesRemoved")
-                }
-                
-                override fun onAddStream(stream: MediaStream?) {
-                    Log.d(TAG, "AddStream: $stream")
-                }
-                
-                override fun onRemoveStream(stream: MediaStream?) {
-                    Log.d(TAG, "RemoveStream: $stream")
-                }
-                
-                override fun onDataChannel(channel: DataChannel?) {
-                    Log.d(TAG, "DataChannel: $channel")
-                }
-                
-                override fun onRenegotiationNeeded() {
-                    Log.d(TAG, "RenegotiationNeeded")
-                }
-                
-                override fun onAddTrack(receiver: RtpReceiver?, streams: Array<out MediaStream>?) {
-                    Log.d(TAG, "AddTrack: receiver=$receiver")
-                    streams?.forEach { stream ->
-                        stream.videoTracks.forEach { track ->
-                            val trackId = track.id()
-                            remoteVideoTracks[trackId] = track
-                            Log.d(TAG, "远端视频轨道已添加: $trackId")
-                        }
-                        stream.audioTracks.forEach { track ->
-                            Log.d(TAG, "远端音频轨道已添加: ${track.id()}")
-                        }
-                    }
-                }
-            }
-            
-            val peerConnection = peerConnectionFactory?.createPeerConnection(rtcConfig, peerConnectionObserver)
-            if (peerConnection != null) {
-                // 添加本地音频轨道
-                localAudioTrack?.let { track ->
-                    peerConnection.addTrack(track, listOf())
-                }
-                
-                // 添加本地视频轨道（如果已启用）
-                localVideoTrack?.let { track ->
-                    peerConnection.addTrack(track, listOf())
-                }
-                
-                peerConnections[channelId] = peerConnection
-                
-                // 创建 Offer
-                val constraints = org.webrtc.MediaConstraints()
-                peerConnection.createOffer(object : SdpObserver {
-                    override fun onCreateSuccess(sdp: SessionDescription?) {
-                        Log.d(TAG, "创建 Offer 成功")
-                        sdp?.let {
-                            peerConnection.setLocalDescription(object : SdpObserver {
-                                override fun onSetSuccess() {
-                                    Log.d(TAG, "设置本地 SDP 成功")
-                                    // 发送 Offer SDP 到信令服务器
-                                    signalingClient?.sendOffer(it.description)
-                                }
-                                
-                                override fun onSetFailure(error: String?) {
-                                    Log.e(TAG, "设置本地 SDP 失败: $error")
-                                }
-                                
-                                override fun onCreateSuccess(p0: SessionDescription?) {}
-                                override fun onCreateFailure(error: String?) {}
-                            }, it)
-                        }
-                    }
-                    
-                    override fun onCreateFailure(error: String?) {
-                        Log.e(TAG, "创建 Offer 失败: $error")
-                    }
-                    
-                    override fun onSetSuccess() {}
-                    override fun onSetFailure(error: String?) {}
-                }, constraints)
-                
-                Log.d(TAG, "PeerConnection 已创建并开始连接")
-            } else {
-                Log.e(TAG, "创建 PeerConnection 失败")
-            }
         } catch (e: Exception) {
             Log.e(TAG, "加入频道失败", e)
         }
@@ -364,6 +254,10 @@ internal class RtcEngineImpl(
                 peerConnection.close()
             }
             peerConnections.clear()
+            offerSentByUid.clear()
+            remoteSdpSetByUid.clear()
+            pendingLocalIceByUid.clear()
+            pendingRemoteIceByUid.clear()
             
             // 停止本地轨道
             localAudioTrack?.setEnabled(false)
@@ -385,13 +279,27 @@ internal class RtcEngineImpl(
         Log.d(TAG, "处理信令消息: type=$type")
         
         when (type) {
+            "user-list" -> {
+                val usersAny = data["users"]
+                val users: List<String> = when (usersAny) {
+                    is org.json.JSONArray -> (0 until usersAny.length()).mapNotNull { idx -> usersAny.optString(idx)?.takeIf { it.isNotBlank() } }
+                    is List<*> -> usersAny.mapNotNull { it?.toString()?.takeIf { s -> s.isNotBlank() } }
+                    else -> emptyList()
+                }
+                users.filter { it != currentUid }.forEach { remote ->
+                    ensurePeer(remote, channelId)
+                    if (shouldInitiateOffer(currentUid, remote)) {
+                        startOffer(remote, channelId)
+                    }
+                }
+            }
             "offer" -> {
-                // 收到 Offer，创建 Answer
+                // 收到 Offer（定向），创建/获取与发送者的 PeerConnection，然后 Answer 回去
+                val fromUid = (data["uid"] as? String) ?: return
                 val sdp = data["sdp"] as? String
                 val sdpType = data["type"] as? String
                 if (sdp != null && sdpType == "offer") {
-                    val peerConnection = peerConnections[channelId]
-                    if (peerConnection != null) {
+                    val peerConnection = ensurePeer(fromUid, channelId) ?: return
                         val sessionDescription = SessionDescription(
                             SessionDescription.Type.OFFER,
                             sdp
@@ -399,13 +307,16 @@ internal class RtcEngineImpl(
                         peerConnection.setRemoteDescription(object : SdpObserver {
                             override fun onSetSuccess() {
                                 Log.d(TAG, "设置远端 SDP 成功")
+                                remoteSdpSetByUid.computeIfAbsent(fromUid) { AtomicBoolean(true) }.set(true)
+                                flushPendingRemoteIce(fromUid)
                                 // 创建 Answer
                                 peerConnection.createAnswer(object : SdpObserver {
                                     override fun onCreateSuccess(sdp: SessionDescription?) {
                                         sdp?.let {
                                             peerConnection.setLocalDescription(object : SdpObserver {
                                                 override fun onSetSuccess() {
-                                                    signalingClient?.sendAnswer(it.description)
+                                                    signalingClient?.sendAnswer(it.description, fromUid)
+                                                    flushPendingLocalIce(fromUid)
                                                 }
                                                 override fun onSetFailure(error: String?) {
                                                     Log.e(TAG, "设置本地 Answer 失败: $error")
@@ -428,16 +339,15 @@ internal class RtcEngineImpl(
                             override fun onCreateSuccess(p0: SessionDescription?) {}
                             override fun onCreateFailure(error: String?) {}
                         }, sessionDescription)
-                    }
                 }
             }
             "answer" -> {
                 // 收到 Answer
+                val fromUid = (data["uid"] as? String) ?: return
                 val sdp = data["sdp"] as? String
                 val sdpType = data["type"] as? String
                 if (sdp != null && sdpType == "answer") {
-                    val peerConnection = peerConnections[channelId]
-                    if (peerConnection != null) {
+                    val peerConnection = peerConnections[fromUid] ?: return
                         val sessionDescription = SessionDescription(
                             SessionDescription.Type.ANSWER,
                             sdp
@@ -445,6 +355,8 @@ internal class RtcEngineImpl(
                         peerConnection.setRemoteDescription(object : SdpObserver {
                             override fun onSetSuccess() {
                                 Log.d(TAG, "设置远端 Answer 成功")
+                                remoteSdpSetByUid.computeIfAbsent(fromUid) { AtomicBoolean(true) }.set(true)
+                                flushPendingRemoteIce(fromUid)
                             }
                             override fun onSetFailure(error: String?) {
                                 Log.e(TAG, "设置远端 Answer 失败: $error")
@@ -452,20 +364,23 @@ internal class RtcEngineImpl(
                             override fun onCreateSuccess(p0: SessionDescription?) {}
                             override fun onCreateFailure(error: String?) {}
                         }, sessionDescription)
-                    }
                 }
             }
             "ice-candidate" -> {
                 // 收到 ICE Candidate
+                val fromUid = (data["uid"] as? String) ?: return
                 val candidate = data["candidate"] as? String
                 val sdpMLineIndex = (data["sdpMLineIndex"] as? Number)?.toInt() ?: 0
                 val sdpMid = data["sdpMid"] as? String
                 if (candidate != null) {
-                    val peerConnection = peerConnections[channelId]
-                    if (peerConnection != null) {
-                        val iceCandidate = IceCandidate(sdpMid, sdpMLineIndex, candidate)
+                    val peerConnection = ensurePeer(fromUid, channelId) ?: return
+                    val iceCandidate = IceCandidate(sdpMid, sdpMLineIndex, candidate)
+                    if (remoteSdpSetByUid[fromUid]?.get() == true) {
                         peerConnection.addIceCandidate(iceCandidate)
-                        Log.d(TAG, "添加 ICE Candidate 成功")
+                        Log.d(TAG, "添加 ICE Candidate 成功: from=$fromUid")
+                    } else {
+                        pendingRemoteIceByUid.computeIfAbsent(fromUid) { mutableListOf() }.add(iceCandidate)
+                        Log.d(TAG, "缓存远端 ICE（等待 setRemoteDescription）: from=$fromUid")
                     }
                 }
             }
@@ -473,15 +388,126 @@ internal class RtcEngineImpl(
                 val uid = data["uid"] as? String
                 if (uid != null) {
                     eventHandler?.onUserJoined(uid, 0)
+                    if (uid != currentUid) {
+                        ensurePeer(uid, channelId)
+                        if (shouldInitiateOffer(currentUid, uid)) {
+                            startOffer(uid, channelId)
+                        }
+                    }
                 }
             }
             "user-left" -> {
                 val uid = data["uid"] as? String
                 if (uid != null) {
                     eventHandler?.onUserOffline(uid, "quit")
+                    peerConnections.remove(uid)?.close()
+                    offerSentByUid.remove(uid)
+                    remoteSdpSetByUid.remove(uid)
+                    pendingLocalIceByUid.remove(uid)
+                    pendingRemoteIceByUid.remove(uid)
                 }
             }
         }
+    }
+    
+    private fun shouldInitiateOffer(localUid: String?, remoteUid: String): Boolean {
+        val l = localUid ?: return false
+        // 简单的确定性发起者：字典序更小的一方发 offer，避免双方同时发（glare）
+        return l < remoteUid
+    }
+    
+    private fun ensurePeer(remoteUid: String, channelId: String): PeerConnection? {
+        peerConnections[remoteUid]?.let { return it }
+        val factory = peerConnectionFactory ?: return null
+        
+        val rtcConfig = PeerConnection.RTCConfiguration(
+            listOf(
+                PeerConnection.IceServer.builder("stun:stun.l.google.com:19302").createIceServer()
+            )
+        )
+        rtcConfig.sdpSemantics = PeerConnection.SdpSemantics.UNIFIED_PLAN
+        
+        val pc = factory.createPeerConnection(rtcConfig, object : PeerConnection.Observer {
+            override fun onSignalingChange(state: PeerConnection.SignalingState?) {}
+            override fun onIceConnectionChange(state: PeerConnection.IceConnectionState?) {
+                Log.d(TAG, "IceConnectionState(remote=$remoteUid): $state")
+            }
+            override fun onIceGatheringChange(state: PeerConnection.IceGatheringState?) {}
+            override fun onIceCandidate(candidate: IceCandidate?) {
+                candidate?.let {
+                    val to = remoteUid
+                    // 在发出 offer/answer 前先缓存，等本地 SDP 设置完成后再补发（更稳）
+                    if (offerSentByUid[to]?.get() == true || remoteSdpSetByUid[to]?.get() == true) {
+                        signalingClient?.sendIceCandidate(it.sdp, it.sdpMLineIndex, it.sdpMid ?: "", to)
+                    } else {
+                        pendingLocalIceByUid.computeIfAbsent(to) { mutableListOf() }.add(it)
+                    }
+                }
+            }
+            override fun onIceCandidatesRemoved(candidates: Array<out IceCandidate>?) {}
+            override fun onAddStream(stream: MediaStream?) {}
+            override fun onRemoveStream(stream: MediaStream?) {}
+            override fun onDataChannel(channel: DataChannel?) {}
+            override fun onRenegotiationNeeded() {}
+            override fun onAddTrack(receiver: RtpReceiver?, streams: Array<out MediaStream>?) {}
+        })
+        
+        if (pc == null) return null
+        
+        // 添加本地轨道（多人：每条 PC 都要 addTrack）
+        localAudioTrack?.let { pc.addTrack(it, listOf()) }
+        localVideoTrack?.let { pc.addTrack(it, listOf()) }
+        
+        peerConnections[remoteUid] = pc
+        offerSentByUid[remoteUid] = AtomicBoolean(false)
+        remoteSdpSetByUid[remoteUid] = AtomicBoolean(false)
+        pendingLocalIceByUid.computeIfAbsent(remoteUid) { mutableListOf() }
+        pendingRemoteIceByUid.computeIfAbsent(remoteUid) { mutableListOf() }
+        return pc
+    }
+    
+    private fun startOffer(remoteUid: String, channelId: String) {
+        val pc = peerConnections[remoteUid] ?: return
+        val sentFlag = offerSentByUid.computeIfAbsent(remoteUid) { AtomicBoolean(false) }
+        if (!sentFlag.compareAndSet(false, true)) return
+        
+        val constraints = org.webrtc.MediaConstraints()
+        pc.createOffer(object : SdpObserver {
+            override fun onCreateSuccess(sdp: SessionDescription?) {
+                sdp ?: return
+                pc.setLocalDescription(object : SdpObserver {
+                    override fun onSetSuccess() {
+                        signalingClient?.sendOffer(sdp.description, remoteUid)
+                        flushPendingLocalIce(remoteUid)
+                    }
+                    override fun onSetFailure(error: String?) {
+                        Log.e(TAG, "设置本地 Offer 失败: $error")
+                    }
+                    override fun onCreateSuccess(p0: SessionDescription?) {}
+                    override fun onCreateFailure(error: String?) {}
+                }, sdp)
+            }
+            override fun onCreateFailure(error: String?) {
+                Log.e(TAG, "创建 Offer 失败: $error")
+            }
+            override fun onSetSuccess() {}
+            override fun onSetFailure(error: String?) {}
+        }, constraints)
+    }
+    
+    private fun flushPendingLocalIce(remoteUid: String) {
+        val list = pendingLocalIceByUid[remoteUid]?.toList().orEmpty()
+        pendingLocalIceByUid[remoteUid]?.clear()
+        list.forEach {
+            signalingClient?.sendIceCandidate(it.sdp, it.sdpMLineIndex, it.sdpMid ?: "", remoteUid)
+        }
+    }
+    
+    private fun flushPendingRemoteIce(remoteUid: String) {
+        val pc = peerConnections[remoteUid] ?: return
+        val list = pendingRemoteIceByUid[remoteUid]?.toList().orEmpty()
+        pendingRemoteIceByUid[remoteUid]?.clear()
+        list.forEach { pc.addIceCandidate(it) }
     }
     
     fun setClientRole(role: RtcClientRole) {

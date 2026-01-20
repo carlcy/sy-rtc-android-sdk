@@ -69,11 +69,12 @@ internal class SignalingClient(
         send(message.toString())
     }
     
-    fun sendOffer(sdp: String) {
+    fun sendOffer(sdp: String, toUid: String? = null) {
         val message = JSONObject().apply {
             put("type", "offer")
             put("channelId", channelId)
             put("uid", uid)
+            if (!toUid.isNullOrEmpty()) put("toUid", toUid)
             put("data", JSONObject().apply {
                 put("sdp", sdp)
                 put("type", "offer")
@@ -82,11 +83,12 @@ internal class SignalingClient(
         send(message.toString())
     }
     
-    fun sendAnswer(sdp: String) {
+    fun sendAnswer(sdp: String, toUid: String? = null) {
         val message = JSONObject().apply {
             put("type", "answer")
             put("channelId", channelId)
             put("uid", uid)
+            if (!toUid.isNullOrEmpty()) put("toUid", toUid)
             put("data", JSONObject().apply {
                 put("sdp", sdp)
                 put("type", "answer")
@@ -95,11 +97,12 @@ internal class SignalingClient(
         send(message.toString())
     }
     
-    fun sendIceCandidate(candidate: String, sdpMLineIndex: Int, sdpMid: String) {
+    fun sendIceCandidate(candidate: String, sdpMLineIndex: Int, sdpMid: String, toUid: String? = null) {
         val message = JSONObject().apply {
             put("type", "ice-candidate")
             put("channelId", channelId)
             put("uid", uid)
+            if (!toUid.isNullOrEmpty()) put("toUid", toUid)
             put("data", JSONObject().apply {
                 put("candidate", candidate)
                 put("sdpMLineIndex", sdpMLineIndex)
@@ -129,8 +132,14 @@ internal class SignalingClient(
             val data = json.optJSONObject("data")?.let { obj ->
                 obj.keys().asSequence().associateWith { obj.get(it) }
             } ?: emptyMap()
+
+            // 兼容：服务端可能把 uid 放在根字段里（如 user-joined/user-left）
+            val extra = mutableMapOf<String, Any>()
+            json.optString("uid")?.takeIf { it.isNotEmpty() }?.let { extra["uid"] = it }
+            json.optString("channelId")?.takeIf { it.isNotEmpty() }?.let { extra["channelId"] = it }
+            json.optString("toUid")?.takeIf { it.isNotEmpty() }?.let { extra["toUid"] = it }
             
-            onMessage(type, data)
+            onMessage(type, if (extra.isEmpty()) data else data + extra)
         } catch (e: Exception) {
             Log.e(TAG, "解析消息失败", e)
         }
