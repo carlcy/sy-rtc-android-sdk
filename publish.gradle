@@ -1,0 +1,58 @@
+// Maven 发布配置
+apply plugin: 'maven-publish'
+apply plugin: 'signing'
+
+publishing {
+    publications {
+        maven(MavenPublication) {
+            groupId = 'com.sy.rtc'
+            artifactId = 'sy-rtc-android-sdk'
+            version = '1.0.0'
+            
+            from components.release
+            
+            pom {
+                name = 'SY RTC Android SDK'
+                description = 'SY RTC Android SDK for audio communication'
+                url = 'https://github.com/yourusername/sy-rtc-android-sdk'
+                
+                licenses {
+                    license {
+                        name = 'MIT License'
+                        url = 'https://opensource.org/licenses/MIT'
+                    }
+                }
+                
+                developers {
+                    developer {
+                        id = 'sy-rtc'
+                        name = 'SY RTC Team'
+                        email = 'support@sy-rtc.com'
+                    }
+                }
+                
+                scm {
+                    connection = 'scm:git:https://github.com/yourusername/sy-rtc-android-sdk.git'
+                    developerConnection = 'scm:git:https://github.com/yourusername/sy-rtc-android-sdk.git'
+                    url = 'https://github.com/yourusername/sy-rtc-android-sdk'
+                }
+            }
+        }
+    }
+    
+    repositories {
+        maven {
+            name = "MavenCentral"
+            url = "https://s01.oss.sonatype.org/service/local/staging/deploy/maven2/"
+            credentials {
+                username = project.findProperty("ossrhUsername") ?: ""
+                password = project.findProperty("ossrhPassword") ?: ""
+            }
+        }
+    }
+}
+
+signing {
+    sign publishing.publications.maven
+}
+

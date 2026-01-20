@@ -1,0 +1,91 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:orientation="vertical"
+    android:padding="16dp">
+
+    <TextView
+        android:id="@+id/statusText"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text="状态: 未初始化"
+        android:textSize="16sp"
+        android:padding="16dp"
+        android:background="#f0f0f0"
+        android:layout_marginBottom="16dp" />
+
+    <Button
+        android:id="@+id/initButton"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text="初始化引擎"
+        android:layout_marginBottom="8dp" />
+
+    <Button
+        android:id="@+id/joinButton"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text="加入房间"
+        android:layout_marginBottom="8dp" />
+
+    <Button
+        android:id="@+id/leaveButton"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text="离开房间"
+        android:layout_marginBottom="8dp" />
+
+    <Button
+        android:id="@+id/enableAudioButton"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text="启用音频"
+        android:layout_marginBottom="8dp" />
+
+    <Button
+        android:id="@+id/muteButton"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text="静音/取消静音"
+        android:layout_marginBottom="8dp" />
+
+    <Button
+        android:id="@+id/enableVideoButton"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text="启用视频（需要直播权限）"
+        android:layout_marginBottom="8dp" />
+
+    <Button
+        android:id="@+id/startPreviewButton"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text="开始预览"
+        android:layout_marginBottom="8dp" />
+
+    <androidx.constraintlayout.widget.ConstraintLayout
+        android:layout_width="match_parent"
+        android:layout_height="200dp"
+        android:layout_marginTop="16dp">
+
+        <SurfaceView
+            android:id="@+id/localVideoView"
+            android:layout_width="150dp"
+            android:layout_height="200dp"
+            android:layout_marginEnd="8dp"
+            app:layout_constraintTop_toTopOf="parent"
+            app:layout_constraintStart_toStartOf="parent"
+            app:layout_constraintEnd_toStartOf="@+id/remoteVideoView" />
+
+        <SurfaceView
+            android:id="@+id/remoteVideoView"
+            android:layout_width="0dp"
+            android:layout_height="200dp"
+            app:layout_constraintTop_toTopOf="parent"
+            app:layout_constraintStart_toEndOf="@+id/localVideoView"
+            app:layout_constraintEnd_toEndOf="parent" />
+
+    </androidx.constraintlayout.widget.ConstraintLayout>
+
+</LinearLayout>
