@@ -39,9 +39,9 @@ internal class SignalingClient(
                     handleMessage(text)
                 }
                 
-                override fun onMessage(webSocket: WebSocket, bytes: ByteString) {
-                    Log.d(TAG, "收到二进制消息: ${bytes.size()} bytes")
-                }
+        override fun onMessage(webSocket: WebSocket, bytes: ByteString) {
+            Log.d(TAG, "收到二进制消息: ${bytes.size} bytes")
+        }
                 
                 override fun onClosing(webSocket: WebSocket, code: Int, reason: String) {
                     Log.d(TAG, "WebSocket 正在关闭: code=$code, reason=$reason")

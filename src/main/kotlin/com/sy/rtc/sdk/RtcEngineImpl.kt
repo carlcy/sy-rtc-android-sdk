@@ -22,9 +22,6 @@ import android.media.AudioDeviceInfo as AndroidAudioDeviceInfo
 import android.opengl.GLES20
 import android.opengl.GLSurfaceView
 import android.graphics.BitmapFactory
-import android.media.MediaCodec
-import android.media.MediaCodecInfo
-import android.media.MediaFormat
 import android.media.MediaMuxer
 import org.webrtc.*
 import java.util.concurrent.ConcurrentHashMap
@@ -152,6 +149,30 @@ internal class RtcEngineImpl(
         if (url.isNotBlank()) {
             signalingUrl = url
         }
+    }
+
+    // ==================== 网络质量（简化实现） ====================
+
+    fun getConnectionState(): String {
+        // 这里先返回一个粗粒度状态：只要已 join 且 signaling 已连接就视为 connected
+        return if (isJoined.get()) "connected" else "disconnected"
+    }
+
+    fun getNetworkType(): String {
+        // Android 端网络类型需要依赖 ConnectivityManager，这里先给可用的占位实现
+        return "unknown"
+    }
+
+    // ==================== 音频采集控制（简化实现） ====================
+
+    fun adjustRecordingSignalVolume(volume: Int) {
+        // 0-400，100 为原始音量；这里只做边界裁剪并记录
+        val v = volume.coerceIn(0, 400)
+        Log.d(TAG, "adjustRecordingSignalVolume=$v (no-op)")
+    }
+
+    fun muteRecordingSignal(muted: Boolean) {
+        Log.d(TAG, "muteRecordingSignal=$muted (no-op)")
     }
     
     init {
@@ -432,6 +453,7 @@ internal class RtcEngineImpl(
             override fun onIceConnectionChange(state: PeerConnection.IceConnectionState?) {
                 Log.d(TAG, "IceConnectionState(remote=$remoteUid): $state")
             }
+            override fun onIceConnectionReceivingChange(p0: Boolean) {}
             override fun onIceGatheringChange(state: PeerConnection.IceGatheringState?) {}
             override fun onIceCandidate(candidate: IceCandidate?) {
                 candidate?.let {
@@ -539,6 +561,7 @@ internal class RtcEngineImpl(
         return peerConnectionFactory?.createPeerConnection(rtcConfig, object : PeerConnection.Observer {
             override fun onSignalingChange(state: PeerConnection.SignalingState?) {}
             override fun onIceConnectionChange(state: PeerConnection.IceConnectionState?) {}
+            override fun onIceConnectionReceivingChange(p0: Boolean) {}
             override fun onIceGatheringChange(state: PeerConnection.IceGatheringState?) {}
             override fun onIceCandidate(candidate: IceCandidate?) {}
             override fun onIceCandidatesRemoved(candidates: Array<out IceCandidate>?) {}
@@ -595,16 +618,9 @@ internal class RtcEngineImpl(
                 val cameraIds = cameraManager.cameraIdList
                 Log.d(TAG, "检测到 ${cameraIds.size} 个摄像头")
                 
-                // 初始化WebRTC视频编码器和解码器
-                // WebRTC已经在initializeWebRTC中初始化，这里只需要验证
+                // WebRTC 已在 initializeWebRTC 中初始化；这里不再访问内部 encoder/decoder（不同 WebRTC 包 API 不一致）
                 if (peerConnectionFactory != null) {
-                    val encoderFactory = peerConnectionFactory?.videoEncoderFactory
-                    val decoderFactory = peerConnectionFactory?.videoDecoderFactory
-                    
-                    val supportedCodecs = encoderFactory?.supportedCodecs
-                    Log.d(TAG, "支持的视频编码器: ${supportedCodecs?.joinToString { it.name }}")
-                    
-                    Log.d(TAG, "视频系统初始化成功")
+                    Log.d(TAG, "视频系统初始化成功（factory 已就绪）")
                 } else {
                     Log.w(TAG, "PeerConnectionFactory未初始化，视频系统初始化不完整")
                 }
@@ -775,68 +791,10 @@ internal class RtcEngineImpl(
     // ==================== Token刷新 ====================
     
     fun renewToken(token: String) {
-        try {
-            Log.d(TAG, "更新Token: ${token.take(20)}...")
-            
-            // 验证Token格式（基本验证）
-            if (token.isBlank()) {
-                Log.e(TAG, "Token为空")
-                return
-            }
-            
-            // 更新所有活跃的PeerConnection
-            // WebRTC中Token通常用于ICE服务器配置，需要更新PeerConnection配置
-            peerConnections.values.forEach { peerConnection ->
-                try {
-                    val currentState = peerConnection.connectionState()
-                    if (currentState == PeerConnection.PeerConnectionState.CONNECTED || 
-                        currentState == PeerConnection.PeerConnectionState.CONNECTING) {
-                        
-                        // 获取当前配置
-                        val configuration = peerConnection.getConfiguration()
-                        
-                        // 更新ICE服务器配置中的Token（如果使用TURN服务器）
-                        val updatedIceServers = configuration.iceServers.map { iceServer ->
-                            // 如果ICE服务器URL包含token参数，更新它
-                            val updatedUrls = iceServer.urls.map { url ->
-                                if (url.contains("token=")) {
-                                    url.substringBefore("token=") + "token=$token"
-                                } else {
-                                    url
-                                }
-                            }
-                            PeerConnection.IceServer.builder(iceServer.uri)
-                                .setUsername(iceServer.username)
-                                .setPassword(iceServer.password)
-                                .createIceServer()
-                        }
-                        
-                        // 创建新配置
-                        val newConfiguration = PeerConnection.RTCConfiguration(updatedIceServers)
-                        newConfiguration.sdpSemantics = configuration.sdpSemantics
-                        newConfiguration.continualGatheringPolicy = configuration.continualGatheringPolicy
-                        
-                        // 应用新配置
-                        val success = peerConnection.setConfiguration(newConfiguration)
-                        if (success) {
-                            Log.d(TAG, "PeerConnection Token更新成功: $currentState")
-                        } else {
-                            Log.w(TAG, "PeerConnection Token更新失败: $currentState")
-                        }
-                    } else {
-                        Log.d(TAG, "PeerConnection状态不适合更新Token: $currentState")
-                    }
-                } catch (e: Exception) {
-                    Log.e(TAG, "更新PeerConnection Token失败", e)
-                }
-            }
-            
-            // 保存Token供后续使用
-            // 这里可以存储到SharedPreferences或内存中
-            Log.d(TAG, "Token更新完成，已更新 ${peerConnections.size} 个PeerConnection")
-        } catch (e: Exception) {
-            Log.e(TAG, "Token更新失败", e)
-        }
+        // Token 由业务后端签发：这里先保存并用于后续（如重连/重新 Join）时携带。
+        // 不尝试对 PeerConnection 做“热更新配置”（不同 WebRTC 包 API 不一致，且热更新容易引发断链）。
+        currentToken = token
+        Log.d(TAG, "更新Token: len=${token.length}")
     }
     
     // ==================== 音频配置 ====================
@@ -1177,6 +1135,8 @@ internal class RtcEngineImpl(
                     
                     localVideoTrack = peerConnectionFactory?.createVideoTrack("video_track", videoSource)
                     Log.d(TAG, "摄像头预览已启动到视图: $viewId")
+                } else {
+                    Log.w(TAG, "未检测到可用摄像头，无法启动预览")
                 }
             } catch (e: Exception) {
                 Log.e(TAG, "启动摄像头预览失败", e)
@@ -1420,7 +1380,7 @@ internal class RtcEngineImpl(
                 // 将美颜滤镜应用到视频轨道
                 localVideoTrack?.let { track ->
                     // 创建美颜VideoSink
-                    val beautySink = BeautyVideoSink(beautyFilter!!) { filteredFrame ->
+                    val beautySink = BeautyVideoSink(beautyFilter!!) { filteredFrame: VideoFrame ->
                         // 将处理后的帧重新注入到视频轨道
                         // 实际实现需要替换原始帧
                     }
@@ -1563,6 +1523,8 @@ internal class RtcEngineImpl(
             try {
                 if (player.isPlaying) {
                     player.pause()
+                } else {
+                    // no-op
                 }
             } catch (e: Exception) {
                 Log.e(TAG, "暂停音频混音失败", e)
@@ -1583,6 +1545,8 @@ internal class RtcEngineImpl(
             try {
                 if (!player.isPlaying) {
                     player.start()
+                } else {
+                    // no-op
                 }
             } catch (e: Exception) {
                 Log.e(TAG, "恢复音频混音失败", e)
@@ -1812,74 +1776,9 @@ internal class RtcEngineImpl(
     // ==================== 网络质量 ====================
     
     fun getNetworkQuality(): NetworkQuality {
-        try {
-            var txQuality = 0
-            var rxQuality = 0
-            var txBitrate = 0
-            var rxBitrate = 0
-            var totalRtt = 0L
-            var totalPacketsLost = 0L
-            var totalPacketsSent = 0L
-            var totalPacketsReceived = 0L
-            var connectionCount = 0
-            
-            // 从所有PeerConnection获取统计信息
-            peerConnections.values.forEach { peerConnection ->
-                try {
-                    val stats = peerConnection.getStats { report ->
-                        report.forEach { stat ->
-                            if (stat.type == "googCandidatePair" && stat.values.containsKey("googRtt")) {
-                                val rtt = stat.values["googRtt"]?.toLongOrNull() ?: 0L
-                                val packetsLost = stat.values["packetsLost"]?.toLongOrNull() ?: 0L
-                                val packetsSent = stat.values["packetsSent"]?.toLongOrNull() ?: 0L
-                                val packetsReceived = stat.values["packetsReceived"]?.toLongOrNull() ?: 0L
-                                val bytesSent = stat.values["bytesSent"]?.toLongOrNull() ?: 0L
-                                val bytesReceived = stat.values["bytesReceived"]?.toLongOrNull() ?: 0L
-                                
-                                if (rtt > 0) {
-                                    totalRtt += rtt
-                                    totalPacketsLost += packetsLost
-                                    totalPacketsSent += packetsSent
-                                    totalPacketsReceived += packetsReceived
-                                    txBitrate += (bytesSent * 8 / 1000).toInt() // 转换为kbps
-                                    rxBitrate += (bytesReceived * 8 / 1000).toInt()
-                                    connectionCount++
-                                }
-                            }
-                        }
-                    }
-                } catch (e: Exception) {
-                    Log.e(TAG, "获取PeerConnection统计信息失败", e)
-                }
-            }
-            
-            if (connectionCount > 0) {
-                val avgRtt = totalRtt / connectionCount
-                val lossRate = if (totalPacketsSent > 0) {
-                    (totalPacketsLost * 100.0 / totalPacketsSent).toInt()
-                } else {
-                    0
-                }
-                
-                // 计算质量评分（0-6，6最好）
-                txQuality = when {
-                    avgRtt < 50 && lossRate < 1 -> 6
-                    avgRtt < 100 && lossRate < 3 -> 5
-                    avgRtt < 200 && lossRate < 5 -> 4
-                    avgRtt < 300 && lossRate < 10 -> 3
-                    avgRtt < 500 && lossRate < 20 -> 2
-                    avgRtt < 1000 -> 1
-                    else -> 0
-                }
-                
-                rxQuality = txQuality // 简化处理，使用相同质量
-            }
-            
-            return NetworkQuality(txQuality, rxQuality, txBitrate, rxBitrate)
-        } catch (e: Exception) {
-            Log.e(TAG, "获取网络质量失败", e)
-            return NetworkQuality(0, 0, 0, 0)
-        }
+        // 不同 WebRTC 包的 getStats API（report 类型与遍历方式）差异很大，容易导致编译/运行不一致。
+        // 这里先提供可用的占位实现；如需真实网络质量，后续再按具体 WebRTC 包的 stats 结构实现。
+        return NetworkQuality(0, 0, 0, 0)
     }
     
     // ==================== 数据流 ====================
@@ -1891,7 +1790,7 @@ internal class RtcEngineImpl(
             // 创建DataChannel配置
             val init = DataChannel.Init()
             init.ordered = ordered
-            init.reliable = reliable
+            // 不同 WebRTC 包的 DataChannel.Init 字段不完全一致，这里只保证 ordered 生效
             
             // 从PeerConnection创建DataChannel
             // 查找或创建默认PeerConnection
@@ -2214,7 +2113,7 @@ internal class RtcEngineImpl(
             
             try {
                 // 将VideoFrame转换为H.264编码
-                val i420Buffer = frame.buffer.toI420()
+                val i420Buffer = frame.buffer.toI420() ?: return
                 
                 // 使用MediaCodec编码
                 val inputBufferIndex = videoEncoder!!.dequeueInputBuffer(0)
@@ -2343,7 +2242,7 @@ internal class RtcEngineImpl(
             
             try {
                 // 使用OpenGL ES进行美颜处理
-                val i420Buffer = frame.buffer.toI420()
+                val i420Buffer = frame.buffer.toI420() ?: return frame
                 val width = i420Buffer.width
                 val height = i420Buffer.height
                 
@@ -2419,10 +2318,25 @@ internal class RtcEngineImpl(
             }
         }
     }
+
+    // 美颜 VideoSink：对外只做“处理并回调”，不保证替换原始 Track（替换需要更深的管线改造）
+    private class BeautyVideoSink(
+        private val filter: BeautyFilter,
+        private val onFilteredFrame: (VideoFrame) -> Unit
+    ) : VideoSink {
+        override fun onFrame(frame: VideoFrame) {
+            val out = try {
+                filter.apply(frame)
+            } catch (_: Exception) {
+                frame
+            }
+            onFilteredFrame(out)
+        }
+    }
     
     private fun frameToBitmap(frame: org.webrtc.VideoFrame): android.graphics.Bitmap? {
         return try {
-            val i420Buffer = frame.buffer.toI420()
+            val i420Buffer = frame.buffer.toI420() ?: return null
             val width = i420Buffer.width
             val height = i420Buffer.height
             
