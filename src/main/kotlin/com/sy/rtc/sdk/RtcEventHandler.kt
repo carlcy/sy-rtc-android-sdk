@@ -26,6 +26,14 @@ interface RtcEventHandler {
      * @param speakers 说话者列表，包含uid和volume
      */
     fun onVolumeIndication(speakers: List<VolumeInfo>) {}
+
+    /**
+     * 错误回调（可选）
+     *
+     * @param code 错误码（自定义）
+     * @param message 错误信息
+     */
+    fun onError(code: Int, message: String) {}
 }
 
 /**

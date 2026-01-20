@@ -87,7 +87,7 @@ afterEvaluate {
                 
                 groupId = 'com.sy.rtc'
                 artifactId = 'sy-rtc-android-sdk'
-                version = '1.0.3'
+                version = '1.0.4'
                 
                 pom {
                     name = 'SY RTC Android SDK'

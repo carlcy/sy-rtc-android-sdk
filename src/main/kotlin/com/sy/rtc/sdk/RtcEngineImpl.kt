@@ -1846,6 +1846,11 @@ internal class RtcEngineImpl(
     // ==================== 旁路推流 ====================
     
     fun startRtmpStreamWithTranscoding(url: String, transcoding: LiveTranscoding) {
+        // 当前仓库未集成稳定可用的 RTMP 推流库（仅保留接口占位，避免“看似成功实际失败”）
+        eventHandler?.onError(1001, "RTMP 推流未集成：请先集成稳定的 RTMP 库后再启用该能力")
+        Log.w(TAG, "RTMP 推流未集成，忽略调用 startRtmpStreamWithTranscoding(url=$url)")
+        return
+
         if (rtmpStreams.containsKey(url)) {
             Log.w(TAG, "旁路推流已在进行中: $url")
             return
@@ -1888,6 +1893,10 @@ internal class RtcEngineImpl(
     }
     
     fun stopRtmpStream(url: String) {
+        eventHandler?.onError(1001, "RTMP 推流未集成：无法停止推流")
+        Log.w(TAG, "RTMP 推流未集成，忽略调用 stopRtmpStream(url=$url)")
+        return
+
         if (!rtmpStreams.containsKey(url)) {
             Log.w(TAG, "旁路推流未在进行中: $url")
             return
@@ -1909,6 +1918,10 @@ internal class RtcEngineImpl(
     }
     
     fun updateRtmpTranscoding(transcoding: LiveTranscoding) {
+        eventHandler?.onError(1001, "RTMP 推流未集成：无法更新转码配置")
+        Log.w(TAG, "RTMP 推流未集成，忽略调用 updateRtmpTranscoding()")
+        return
+
         val url = rtmpStreams.entries.firstOrNull { it.value == transcoding }?.key
         if (url == null) {
             Log.w(TAG, "未找到对应的旁路推流，无法更新转码配置")
