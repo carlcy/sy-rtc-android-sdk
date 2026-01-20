@@ -46,12 +46,9 @@ dependencies {
     implementation 'androidx.core:core-ktx:1.12.0'
     implementation 'org.jetbrains.kotlinx:kotlinx-coroutines-android:1.7.3'
     
-    // WebRTC - 完整的RTC功能实现
-    // 使用 JitPack 上的 WebRTC 或本地构建
-    // implementation 'org.webrtc:google-webrtc:1.0.32006'
-    // 如果上面的不可用，可以使用：
-    implementation 'com.github.webrtc-sdk:webrtc:1.0.32006' // 需要确认 JitPack 上是否有
-    // 或者暂时注释掉，使用系统 WebRTC（如果设备支持）
+    // WebRTC - 完整的RTC功能实现（MavenCentral 可用）
+    // 提供 org.webrtc.* API
+    implementation 'io.github.webrtc-sdk:android:125.6422.07'
     
     // OkHttp for WebSocket signaling
     implementation 'com.squareup.okhttp3:okhttp:4.12.0'
@@ -90,7 +87,7 @@ afterEvaluate {
                 
                 groupId = 'com.sy.rtc'
                 artifactId = 'sy-rtc-android-sdk'
-                version = '1.0.1'
+                version = '1.0.2'
                 
                 pom {
                     name = 'SY RTC Android SDK'
