@@ -27,6 +27,9 @@ import org.webrtc.*
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
+import java.net.HttpURLConnection
+import java.net.URL
+import org.json.JSONObject
 
 /**
  * RTC引擎实现类
@@ -101,13 +104,8 @@ internal class RtcEngineImpl(
     
     // 旁路推流
     private val rtmpStreams = ConcurrentHashMap<String, LiveTranscoding>()
-    // RTMP客户端和编码器（需要RTMP库支持）
-    // private val rtmpClients = ConcurrentHashMap<String, RtmpClient>()
-    // private val rtmpVideoEncoders = ConcurrentHashMap<String, VideoEncoder>()
-    // private val rtmpAudioEncoders = ConcurrentHashMap<String, AudioEncoder>()
-    
-    // 使用WebRTC的RTMP推流（通过MediaRecorder或自定义实现）
-    private val rtmpSessions = ConcurrentHashMap<String, RtmpStreamSession>()
+    // RTMP 推流采用“服务端旁路 egress”方案：SDK 调用后端 /api/rtc/live/* 控制接口（业内常见）
+    private var apiBaseUrl: String? = null
     
     // 屏幕共享
     private var mediaProjection: android.media.projection.MediaProjection? = null
@@ -128,6 +126,7 @@ internal class RtcEngineImpl(
     // 频道状态
     private var currentChannelId: String? = null
     private var currentUid: String? = null
+    // join 传入 token：默认视为业务端 JWT（用于调用 /api/rtc/live/*）
     private var currentToken: String? = null
     private var isJoined = AtomicBoolean(false)
     
@@ -148,6 +147,82 @@ internal class RtcEngineImpl(
     fun setSignalingServerUrl(url: String) {
         if (url.isNotBlank()) {
             signalingUrl = url
+        }
+    }
+
+    fun setApiBaseUrl(url: String) {
+        apiBaseUrl = url.trim().trimEnd('/')
+    }
+
+    private fun postLiveApi(path: String, body: JSONObject) {
+        val base = apiBaseUrl
+        val token = currentToken
+        if (base.isNullOrEmpty()) {
+            eventHandler?.onError(1001, "API_BASE_URL 未设置：请先调用 setApiBaseUrl() 或在 Flutter init 里传 apiBaseUrl")
+            return
+        }
+        if (token.isNullOrEmpty()) {
+            eventHandler?.onError(1001, "缺少登录 token：join() 传入的 token 为空，无法调用直播控制接口")
+            return
+        }
+        try {
+            val url = URL("$base$path")
+            val conn = (url.openConnection() as HttpURLConnection).apply {
+                requestMethod = "POST"
+                connectTimeout = 8000
+                readTimeout = 8000
+                doOutput = true
+                setRequestProperty("Content-Type", "application/json")
+                setRequestProperty("Authorization", "Bearer $token")
+                setRequestProperty("X-App-Id", appId)
+            }
+            conn.outputStream.use { os ->
+                os.write(body.toString().toByteArray(Charsets.UTF_8))
+            }
+            val code = conn.responseCode
+            val resp = try {
+                val s = if (code in 200..299) conn.inputStream else conn.errorStream
+                s?.bufferedReader()?.use { it.readText() } ?: ""
+            } catch (_: Exception) {
+                ""
+            }
+            if (code !in 200..299) {
+                eventHandler?.onError(1001, "直播接口失败: $code $resp")
+            }
+            conn.disconnect()
+        } catch (e: Exception) {
+            eventHandler?.onError(1001, "直播接口异常: ${e.message}")
+        }
+    }
+
+    private fun guessLayoutFromTranscoding(transcoding: LiveTranscoding): JSONObject {
+        val users = transcoding.transcodingUsers
+        if (users.isNullOrEmpty()) {
+            return JSONObject().apply {
+                put("mode", "host-main")
+                put("hostUid", currentUid ?: "")
+                put("side", "right")
+            }
+        }
+        val sorted = users.sortedByDescending { it.width * it.height }
+        val top1 = sorted.getOrNull(0)
+        val top2 = sorted.getOrNull(1)
+        if (top1 != null && top2 != null) {
+            val a1 = top1.width * top1.height
+            val a2 = top2.width * top2.height
+            val ratio = if (a2 <= 0.0) 999.0 else a1 / a2
+            if (ratio < 1.2) {
+                return JSONObject().apply {
+                    put("mode", "pk")
+                    put("pkUids", org.json.JSONArray(listOf(top1.uid, top2.uid)))
+                }
+            }
+        }
+        val host = top1?.uid ?: (currentUid ?: "")
+        return JSONObject().apply {
+            put("mode", "host-main")
+            put("hostUid", host)
+            put("side", "right")
         }
     }
 
@@ -1846,106 +1921,60 @@ internal class RtcEngineImpl(
     // ==================== 旁路推流 ====================
     
     fun startRtmpStreamWithTranscoding(url: String, transcoding: LiveTranscoding) {
-        // 当前仓库未集成稳定可用的 RTMP 推流库（仅保留接口占位，避免“看似成功实际失败”）
-        eventHandler?.onError(1001, "RTMP 推流未集成：请先集成稳定的 RTMP 库后再启用该能力")
-        Log.w(TAG, "RTMP 推流未集成，忽略调用 startRtmpStreamWithTranscoding(url=$url)")
-        return
-
-        if (rtmpStreams.containsKey(url)) {
-            Log.w(TAG, "旁路推流已在进行中: $url")
+        if (url.isBlank()) return
+        val channelId = currentChannelId
+        if (channelId.isNullOrBlank()) {
+            eventHandler?.onError(1001, "未加入频道，无法开播")
             return
         }
-        
-        rtmpStreams[url] = transcoding
-        Log.d(TAG, "开始旁路推流: url=$url, width=${transcoding.width}, height=${transcoding.height}, bitrate=${transcoding.videoBitrate}")
-        
-        try {
-            // 创建RTMP推流会话
-            val session = RtmpStreamSession(
-                url = url,
-                width = transcoding.width,
-                height = transcoding.height,
-                frameRate = transcoding.videoFramerate,
-                bitrate = transcoding.videoBitrate * 1000
-            )
-            rtmpSessions[url] = session
-            
-            // 使用WebRTC的视频轨道进行RTMP推流
-            // 从本地视频轨道获取帧
-            localVideoTrack?.let { track ->
-                track.addSink(object : org.webrtc.VideoSink {
-                    override fun onFrame(frame: org.webrtc.VideoFrame) {
-                        // 将视频帧编码并推流
-                        session.processVideoFrame(frame)
-                    }
-                })
-            }
-            
-            // 启动RTMP推流
-            session.start()
-            
-            Log.d(TAG, "RTMP推流已启动: $url")
-        } catch (e: Exception) {
-            Log.e(TAG, "启动RTMP推流失败", e)
-            rtmpStreams.remove(url)
-            rtmpSessions.remove(url)
+        val publishers = transcoding.transcodingUsers
+            ?.mapNotNull { it.uid?.takeIf { s -> s.isNotBlank() } }
+            ?.distinct()
+            ?.takeIf { it.isNotEmpty() }
+            ?: listOfNotNull(currentUid).filter { it.isNotBlank() }
+
+        val body = JSONObject().apply {
+            put("channelId", channelId)
+            put("publishers", org.json.JSONArray(publishers))
+            put("rtmpUrls", org.json.JSONArray(listOf(url)))
+            put("video", JSONObject().apply {
+                put("outW", transcoding.width)
+                put("outH", transcoding.height)
+                put("fps", transcoding.videoFramerate)
+                put("bitrateKbps", transcoding.videoBitrate)
+            })
+            put("audio", JSONObject().apply {
+                put("sampleRate", 48000)
+                put("channels", 2)
+                put("bitrateKbps", 128)
+            })
+            put("layout", guessLayoutFromTranscoding(transcoding))
         }
+        postLiveApi("/api/rtc/live/start", body)
+        rtmpStreams[url] = transcoding
     }
     
     fun stopRtmpStream(url: String) {
-        eventHandler?.onError(1001, "RTMP 推流未集成：无法停止推流")
-        Log.w(TAG, "RTMP 推流未集成，忽略调用 stopRtmpStream(url=$url)")
-        return
-
-        if (!rtmpStreams.containsKey(url)) {
-            Log.w(TAG, "旁路推流未在进行中: $url")
-            return
-        }
-        
-        try {
-            // 停止RTMP推流会话
-            val session = rtmpSessions[url]
-            session?.stop()
-            
-            // 清理资源
-            rtmpStreams.remove(url)
-            rtmpSessions.remove(url)
-            
-            Log.d(TAG, "RTMP推流已停止: $url")
-        } catch (e: Exception) {
-            Log.e(TAG, "停止RTMP推流失败", e)
-        }
+        if (url.isBlank()) return
+        val channelId = currentChannelId ?: return
+        val body = JSONObject().apply { put("channelId", channelId) }
+        postLiveApi("/api/rtc/live/stop", body)
+        rtmpStreams.remove(url)
     }
     
     fun updateRtmpTranscoding(transcoding: LiveTranscoding) {
-        eventHandler?.onError(1001, "RTMP 推流未集成：无法更新转码配置")
-        Log.w(TAG, "RTMP 推流未集成，忽略调用 updateRtmpTranscoding()")
-        return
-
-        val url = rtmpStreams.entries.firstOrNull { it.value == transcoding }?.key
-        if (url == null) {
-            Log.w(TAG, "未找到对应的旁路推流，无法更新转码配置")
-            return
+        val channelId = currentChannelId ?: return
+        val body = JSONObject().apply {
+            put("channelId", channelId)
+            put("video", JSONObject().apply {
+                put("outW", transcoding.width)
+                put("outH", transcoding.height)
+                put("fps", transcoding.videoFramerate)
+                put("bitrateKbps", transcoding.videoBitrate)
+            })
+            put("layout", guessLayoutFromTranscoding(transcoding))
         }
-        
-        rtmpStreams[url] = transcoding
-        Log.d(TAG, "更新旁路推流转码配置: width=${transcoding.width}, height=${transcoding.height}, bitrate=${transcoding.videoBitrate}")
-        
-        try {
-            // 更新RTMP推流会话配置
-            val session = rtmpSessions[url]
-            if (session != null) {
-                session.updateConfig(
-                    width = transcoding.width,
-                    height = transcoding.height,
-                    frameRate = transcoding.videoFramerate,
-                    bitrate = transcoding.videoBitrate * 1000
-                )
-            }
-            Log.d(TAG, "RTMP推流转码配置已更新")
-        } catch (e: Exception) {
-            Log.e(TAG, "更新RTMP推流转码配置失败", e)
-        }
+        postLiveApi("/api/rtc/live/update", body)
     }
     
     // ==================== 清理 ====================
@@ -2035,190 +2064,7 @@ internal class RtcEngineImpl(
         val rxBitrate: Int
     )
     
-    // RTMP推流会话类
-    private class RtmpStreamSession(
-        val url: String,
-        var width: Int,
-        var height: Int,
-        var frameRate: Int,
-        var bitrate: Int
-    ) {
-        private var isStreaming = false
-        
-        private var videoEncoder: MediaCodec? = null
-        private var audioEncoder: MediaCodec? = null
-        // TODO: 需要实现 RtmpConnection 类或使用第三方 RTMP 库
-        // private var rtmpConnection: RtmpConnection? = null
-        
-        fun start() {
-            isStreaming = true
-            try {
-                // 初始化视频编码器（H.264）
-                videoEncoder = MediaCodec.createEncoderByType(MediaFormat.MIMETYPE_VIDEO_AVC)
-                val videoFormat = MediaFormat.createVideoFormat(
-                    MediaFormat.MIMETYPE_VIDEO_AVC,
-                    width,
-                    height
-                )
-                videoFormat.setInteger(MediaFormat.KEY_COLOR_FORMAT, MediaCodecInfo.CodecCapabilities.COLOR_FormatSurface)
-                videoFormat.setInteger(MediaFormat.KEY_BIT_RATE, bitrate)
-                videoFormat.setInteger(MediaFormat.KEY_FRAME_RATE, frameRate)
-                videoFormat.setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, 2)
-                videoEncoder?.configure(videoFormat, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
-                
-                // 初始化音频编码器（AAC）
-                audioEncoder = MediaCodec.createEncoderByType(MediaFormat.MIMETYPE_AUDIO_AAC)
-                val audioFormat = MediaFormat.createAudioFormat(
-                    MediaFormat.MIMETYPE_AUDIO_AAC,
-                    44100,
-                    2
-                )
-                audioFormat.setInteger(MediaFormat.KEY_BIT_RATE, 64000)
-                audioFormat.setInteger(MediaFormat.KEY_AAC_PROFILE, MediaCodecInfo.CodecProfileLevel.AACObjectLC)
-                audioEncoder?.configure(audioFormat, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
-                
-                // 创建RTMP连接
-                // TODO: 需要集成 RTMP 推流库（如 FFmpeg 或 librtmp）
-                // 当前实现为占位，实际使用时需要：
-                // 1. 添加 RTMP 库依赖（如 'com.github.pedroSG94.RootEncoder:rtmplibrary:2.1.7'）
-                // 2. 实现 RtmpConnection 类或使用第三方库
-                // 3. 将编码后的 H.264/AAC 数据推送到 RTMP 服务器
-                Log.w("RtmpStreamSession", "RTMP推流功能需要集成RTMP库，当前为占位实现")
-                // rtmpConnection = RtmpConnection(url)
-                // rtmpConnection?.connect()
-                
-                // 启动编码器
-                videoEncoder?.start()
-                audioEncoder?.start()
-                
-                Log.d("RtmpStreamSession", "RTMP推流会话已启动: $url")
-            } catch (e: Exception) {
-                Log.e("RtmpStreamSession", "启动RTMP推流失败", e)
-                isStreaming = false
-            }
-        }
-        
-        fun stop() {
-            isStreaming = false
-            try {
-                // 停止编码器
-                videoEncoder?.stop()
-                videoEncoder?.release()
-                videoEncoder = null
-                
-                audioEncoder?.stop()
-                audioEncoder?.release()
-                audioEncoder = null
-                
-                // 断开RTMP连接
-                // TODO: 实现 RTMP 连接断开逻辑
-                // rtmpConnection?.disconnect()
-                // rtmpConnection = null
-                
-                Log.d("RtmpStreamSession", "RTMP推流会话已停止: $url")
-            } catch (e: Exception) {
-                Log.e("RtmpStreamSession", "停止RTMP推流失败", e)
-            }
-        }
-        
-        fun processVideoFrame(frame: org.webrtc.VideoFrame) {
-            if (!isStreaming || videoEncoder == null) return
-            
-            try {
-                // 将VideoFrame转换为H.264编码
-                val i420Buffer = frame.buffer.toI420() ?: return
-                
-                // 使用MediaCodec编码
-                val inputBufferIndex = videoEncoder!!.dequeueInputBuffer(0)
-                if (inputBufferIndex >= 0) {
-                    val inputBuffer = videoEncoder!!.getInputBuffer(inputBufferIndex)
-                    inputBuffer?.clear()
-                    
-                    // 将I420数据转换为NV12格式（MediaCodec需要的格式）
-                    val yPlane = i420Buffer.dataY
-                    val uPlane = i420Buffer.dataU
-                    val vPlane = i420Buffer.dataV
-                    
-                    val ySize = width * height
-                    val uvSize = width * height / 4
-                    
-                    // 复制Y平面
-                    val yArray = ByteArray(ySize)
-                    yPlane.get(yArray)
-                    inputBuffer?.put(yArray)
-                    
-                    // 交错U和V平面（NV12格式：UVUV...）
-                    val uvArray = ByteArray(uvSize * 2)
-                    for (i in 0 until uvSize) {
-                        uvArray[i * 2] = uPlane.get(i)
-                        uvArray[i * 2 + 1] = vPlane.get(i)
-                    }
-                    inputBuffer?.put(uvArray)
-                    
-                    val presentationTimeUs = System.nanoTime() / 1000
-                    videoEncoder!!.queueInputBuffer(
-                        inputBufferIndex,
-                        0,
-                        inputBuffer?.position() ?: 0,
-                        presentationTimeUs,
-                        0
-                    )
-                }
-                
-                // 获取编码后的数据
-                val bufferInfo = android.media.MediaCodec.BufferInfo()
-                var outputBufferIndex = videoEncoder!!.dequeueOutputBuffer(bufferInfo, 0)
-                while (outputBufferIndex >= 0) {
-                    val outputBuffer = videoEncoder!!.getOutputBuffer(outputBufferIndex)
-                    if (outputBuffer != null && bufferInfo.size > 0) {
-                        // 将编码后的数据推送到RTMP服务器
-                        // TODO: 需要实现 RTMP 推流逻辑
-                        val encodedData = ByteArray(bufferInfo.size)
-                        outputBuffer.get(encodedData)
-                        // rtmpConnection?.sendVideoFrame(encodedData, bufferInfo.presentationTimeUs)
-                        Log.d("RtmpStreamSession", "编码后的视频帧: ${encodedData.size} bytes, pts=${bufferInfo.presentationTimeUs}")
-                    }
-                    videoEncoder!!.releaseOutputBuffer(outputBufferIndex, false)
-                    outputBufferIndex = videoEncoder!!.dequeueOutputBuffer(bufferInfo, 0)
-                }
-            } catch (e: Exception) {
-                Log.e("RtmpStreamSession", "处理视频帧失败", e)
-            }
-        }
-        
-        fun updateConfig(width: Int, height: Int, frameRate: Int, bitrate: Int) {
-            this.width = width
-            this.height = height
-            this.frameRate = frameRate
-            this.bitrate = bitrate
-            
-            // 如果正在推流，重新配置编码器
-            if (isStreaming && videoEncoder != null) {
-                try {
-                    videoEncoder?.stop()
-                    videoEncoder?.release()
-                    
-                    // 重新创建编码器
-                    videoEncoder = MediaCodec.createEncoderByType(MediaFormat.MIMETYPE_VIDEO_AVC)
-                    val videoFormat = MediaFormat.createVideoFormat(
-                        MediaFormat.MIMETYPE_VIDEO_AVC,
-                        width,
-                        height
-                    )
-                    videoFormat.setInteger(MediaFormat.KEY_COLOR_FORMAT, MediaCodecInfo.CodecCapabilities.COLOR_FormatSurface)
-                    videoFormat.setInteger(MediaFormat.KEY_BIT_RATE, bitrate)
-                    videoFormat.setInteger(MediaFormat.KEY_FRAME_RATE, frameRate)
-                    videoFormat.setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, 2)
-                    videoEncoder?.configure(videoFormat, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
-                    videoEncoder?.start()
-                    
-                    Log.d("RtmpStreamSession", "RTMP推流配置已更新: ${width}x${height}, ${frameRate}fps, ${bitrate}bps")
-                } catch (e: Exception) {
-                    Log.e("RtmpStreamSession", "更新RTMP推流配置失败", e)
-                }
-            }
-        }
-    }
+    // RTMP 推流改为走服务端 egress：不在客户端实现 RTMP 连接/编码，以降低复杂度并提高跨平台一致性。
     
     // 美颜滤镜类
     private class BeautyFilter {

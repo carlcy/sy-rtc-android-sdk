@@ -20,6 +20,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var engine: RtcEngine
     private lateinit var statusText: TextView
     private var isJoined = false
+    private var isLocalMuted = false
     
     private val PERMISSIONS = arrayOf(
         Manifest.permission.RECORD_AUDIO,
@@ -67,9 +68,9 @@ class MainActivity : AppCompatActivity() {
                 }
             }
             
-            override fun onUserOffline(uid: String, reason: Int) {
+            override fun onUserOffline(uid: String, reason: String) {
                 runOnUiThread {
-                    statusText.text = "用户离开: $uid"
+                    statusText.text = "用户离开: $uid (reason=$reason)"
                     Toast.makeText(this@MainActivity, "用户离开: $uid", Toast.LENGTH_SHORT).show()
                 }
             }
@@ -82,12 +83,18 @@ class MainActivity : AppCompatActivity() {
                     }
                 }
             }
+
+            override fun onError(code: Int, message: String) {
+                runOnUiThread {
+                    statusText.text = "错误: $code $message"
+                }
+            }
         })
         
         // 初始化
         initButton.setOnClickListener {
             try {
-                engine.init("your_app_id")
+                engine.init("your_app_id", this)
                 statusText.text = "初始化成功"
                 Toast.makeText(this, "初始化成功", Toast.LENGTH_SHORT).show()
             } catch (e: Exception) {
@@ -118,9 +125,9 @@ class MainActivity : AppCompatActivity() {
         
         // 静音/取消静音
         muteButton.setOnClickListener {
-            val muted = !engine.isLocalAudioMuted()
-            engine.muteLocalAudio(muted)
-            statusText.text = if (muted) "已静音" else "已取消静音"
+            isLocalMuted = !isLocalMuted
+            engine.muteLocalAudio(isLocalMuted)
+            statusText.text = if (isLocalMuted) "已静音" else "已取消静音"
         }
         
         // 启用视频（需要直播权限）

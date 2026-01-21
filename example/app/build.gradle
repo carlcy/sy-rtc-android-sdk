@@ -38,15 +38,14 @@ dependencies {
     implementation 'com.google.android.material:material:1.11.0'
     implementation 'androidx.constraintlayout:constraintlayout:2.1.4'
     
-    // 使用本地AAR（需要先构建rtc-android-sdk）
-    implementation(name: 'sy-rtc-android-sdk-release', ext: 'aar')
-    
-    // 或使用Maven依赖
-    // implementation 'com.sy.rtc:sy-rtc-android-sdk:1.0.0'
+    // 使用 JitPack 依赖（推荐，与发布版本同步）
+    implementation 'com.github.carlcy:sy-rtc-android-sdk:v1.0.5'
+
+    // 或使用 Maven Central（如已发布）
+    // implementation 'com.sy.rtc:sy-rtc-android-sdk:1.0.5'
+
+    // 或使用本地 AAR（不推荐，容易把二进制误提交到仓库）
+    // implementation(name: 'sy-rtc-android-sdk-release', ext: 'aar')
 }
 
-repositories {
-    flatDir {
-        dirs '../libs'
-    }
-}
+// repositories 已在 settings.gradle 的 dependencyResolutionManagement 中声明（FAIL_ON_PROJECT_REPOS）

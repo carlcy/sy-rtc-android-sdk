@@ -11,6 +11,8 @@ dependencyResolutionManagement {
     repositories {
         google()
         mavenCentral()
+        // JitPack（拉取 Android SDK）
+        maven { url 'https://jitpack.io' }
     }
 }
 

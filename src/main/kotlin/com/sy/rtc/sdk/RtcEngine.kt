@@ -63,6 +63,17 @@ class RtcEngine private constructor() {
     }
 
     /**
+     * 设置后端 API Base URL（用于直播旁路：开播/关播/切布局/更新转码等）
+     *
+     * 示例：
+     * - http://47.105.48.196
+     * - https://your-domain.com
+     */
+    fun setApiBaseUrl(url: String) {
+        impl?.setApiBaseUrl(url)
+    }
+
+    /**
      * 加入频道
      * 
      * @param channelId 频道ID
