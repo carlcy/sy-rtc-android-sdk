@@ -1921,7 +1921,6 @@ internal class RtcEngineImpl(
     // ==================== 旁路推流 ====================
     
     fun startRtmpStreamWithTranscoding(url: String, transcoding: LiveTranscoding) {
-        if (url.isBlank()) return
         val channelId = currentChannelId
         if (channelId.isNullOrBlank()) {
             eventHandler?.onError(1001, "未加入频道，无法开播")
@@ -1933,10 +1932,13 @@ internal class RtcEngineImpl(
             ?.takeIf { it.isNotEmpty() }
             ?: listOfNotNull(currentUid).filter { it.isNotBlank() }
 
+        // 如果url为空，使用空数组，后端会自动生成我们服务器的RTMP地址
+        val rtmpUrls = if (url.isBlank()) emptyList<String>() else listOf(url)
+
         val body = JSONObject().apply {
             put("channelId", channelId)
             put("publishers", org.json.JSONArray(publishers))
-            put("rtmpUrls", org.json.JSONArray(listOf(url)))
+            put("rtmpUrls", org.json.JSONArray(rtmpUrls))
             put("video", JSONObject().apply {
                 put("outW", transcoding.width)
                 put("outH", transcoding.height)
@@ -1951,7 +1953,10 @@ internal class RtcEngineImpl(
             put("layout", guessLayoutFromTranscoding(transcoding))
         }
         postLiveApi("/api/rtc/live/start", body)
-        rtmpStreams[url] = transcoding
+        
+        // 如果url为空，使用生成的地址（从响应中获取，或使用默认格式）
+        val finalUrl = if (url.isBlank()) "auto_generated_$channelId" else url
+        rtmpStreams[finalUrl] = transcoding
     }
     
     fun stopRtmpStream(url: String) {

@@ -9,3 +9,7 @@
 .cxx
 local.properties
 
+# Example app build outputs
+/example/app/build/
+/example/build/
+/example/libs/
