@@ -13,7 +13,8 @@ internal class SignalingClient(
     private val signalingUrl: String,
     private val channelId: String,
     private val uid: String,
-    private val onMessage: (type: String, data: Map<String, Any>) -> Unit
+    private val onMessage: (type: String, data: Map<String, Any>) -> Unit,
+    private val onConnectionFailure: (() -> Unit)? = null
 ) {
     private val TAG = "SignalingClient"
     private var webSocket: WebSocket? = null
@@ -53,6 +54,7 @@ internal class SignalingClient(
                 
                 override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
                     Log.e(TAG, "WebSocket 连接失败", t)
+                    onConnectionFailure?.invoke()
                 }
             })
         } catch (e: Exception) {

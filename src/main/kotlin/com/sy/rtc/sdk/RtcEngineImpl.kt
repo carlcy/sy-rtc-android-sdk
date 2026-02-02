@@ -175,6 +175,8 @@ internal class RtcEngineImpl(
                 setRequestProperty("Content-Type", "application/json")
                 setRequestProperty("Authorization", "Bearer $token")
                 setRequestProperty("X-App-Id", appId)
+                // 后端 live 接口需要 uid，否则返回 401
+                currentUid?.takeIf { it.isNotEmpty() }?.let { setRequestProperty("X-Uid", it) }
             }
             conn.outputStream.use { os ->
                 os.write(body.toString().toByteArray(Charsets.UTF_8))
@@ -318,9 +320,11 @@ internal class RtcEngineImpl(
         
         try {
             // 连接信令服务器
-            signalingClient = SignalingClient(signalingUrl, channelId, uid) { type, data ->
-                handleSignalingMessage(type, data, channelId)
-            }
+            signalingClient = SignalingClient(
+                signalingUrl, channelId, uid,
+                onMessage = { type, data -> handleSignalingMessage(type, data, channelId) },
+                onConnectionFailure = { eventHandler?.onError(1003, "信令连接失败") }
+            )
             signalingClient?.connect()
             
             // 创建音频轨道
@@ -502,6 +506,10 @@ internal class RtcEngineImpl(
                     pendingLocalIceByUid.remove(uid)
                     pendingRemoteIceByUid.remove(uid)
                 }
+            }
+            "error" -> {
+                val msg = (data["error"] as? String) ?: "信令错误"
+                eventHandler?.onError(1002, msg)
             }
         }
     }

@@ -42,7 +42,7 @@ repositories {
     mavenLocal()
 }
 dependencies {
-    implementation 'com.sy.rtc:sy-rtc-android-sdk:1.0.0'
+    implementation 'com.sy.rtc:sy-rtc-android-sdk:1.2.0'
 }
 ```
 
@@ -57,7 +57,7 @@ repositories {
     maven { url 'https://jitpack.io' }
 }
 dependencies {
-    implementation 'com.github.yourusername:sy-rtc-android-sdk:1.0.0'
+    implementation 'com.github.yourusername:sy-rtc-android-sdk:1.2.0'
 }
 ```
 

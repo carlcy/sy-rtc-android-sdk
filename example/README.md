@@ -25,7 +25,7 @@ example/
 
 ```gradle
 dependencies {
-    implementation 'com.sy.rtc:sy-rtc-android-sdk:1.0.0'
+    implementation 'com.sy.rtc:sy-rtc-android-sdk:1.2.0'
 }
 ```
 

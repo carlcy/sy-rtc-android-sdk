@@ -12,7 +12,7 @@ android {
         minSdk 21
         targetSdk 34
         versionCode 1
-        versionName "1.0"
+        versionName "1.2.0"
     }
 
     buildTypes {
@@ -39,7 +39,7 @@ dependencies {
     implementation 'androidx.constraintlayout:constraintlayout:2.1.4'
     
     // 使用 JitPack 依赖（推荐，与发布版本同步）
-    implementation 'com.github.carlcy:sy-rtc-android-sdk:v1.0.5'
+    implementation 'com.github.carlcy:sy-rtc-android-sdk:v1.2.0'
 
     // 或使用 Maven Central（如已发布）
     // implementation 'com.sy.rtc:sy-rtc-android-sdk:1.0.5'
