@@ -74,6 +74,16 @@ class RtcEngine private constructor() {
     }
 
     /**
+     * 设置后端 API 认证 Token（JWT）
+     *
+     * 用于调用 /api/rtc/live/* 等需要登录认证的接口。
+     * 注意：join() 里的 token 是 RTC Token，与该 JWT 不同。
+     */
+    fun setApiAuthToken(token: String) {
+        impl?.setApiAuthToken(token)
+    }
+
+    /**
      * 加入频道
      * 
      * @param channelId 频道ID
@@ -133,6 +143,8 @@ class RtcEngine private constructor() {
      * 释放资源
      */
     fun release() {
+        impl?.release()
+        impl = null
         eventHandler = null
         appId = null
     }
@@ -240,16 +252,18 @@ class RtcEngine private constructor() {
 
     /**
      * 设置音频采集设备
+     * @return 0 成功，-1 失败或未初始化
      */
-    fun setRecordingDevice(deviceId: String) {
-        impl?.setRecordingDevice(deviceId)
+    fun setRecordingDevice(deviceId: String): Int {
+        return impl?.setRecordingDevice(deviceId) ?: -1
     }
 
     /**
      * 设置音频播放设备
+     * @return 0 成功，-1 失败或未初始化
      */
-    fun setPlaybackDevice(deviceId: String) {
-        impl?.setPlaybackDevice(deviceId)
+    fun setPlaybackDevice(deviceId: String): Int {
+        return impl?.setPlaybackDevice(deviceId) ?: -1
     }
 
     /**
@@ -553,9 +567,10 @@ class RtcEngine private constructor() {
 
     /**
      * 开始客户端录音
+     * @return 0 成功，-1 失败或已在录制
      */
-    fun startAudioRecording(config: AudioRecordingConfiguration) {
-        impl?.startAudioRecording(config)
+    fun startAudioRecording(config: AudioRecordingConfiguration): Int {
+        return impl?.startAudioRecording(config) ?: -1
     }
 
     /**

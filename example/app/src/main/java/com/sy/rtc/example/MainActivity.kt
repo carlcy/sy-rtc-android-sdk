@@ -15,8 +15,18 @@ import com.sy.rtc.sdk.RtcEventHandler
 import com.sy.rtc.sdk.RtcClientRole
 import com.sy.rtc.sdk.VolumeInfo
 import com.sy.rtc.sdk.VideoEncoderConfiguration
+import okhttp3.OkHttpClient
+import okhttp3.Request
+import org.json.JSONObject
+import java.util.concurrent.TimeUnit
 
 class MainActivity : AppCompatActivity() {
+    // 部署 Demo 后端后，改为你的服务器地址（与 deploy 的 SERVER_IP 一致）
+    private val demoServerHost = "47.105.48.196"
+    private val demoApiBase = "http://$demoServerHost/demo-api"
+    private val demoSignalingUrl = "ws://$demoServerHost/ws/signaling"
+    private val demoAppId = "your_app_id"
+    private val demoAppSecret = "your_app_secret"
     private lateinit var engine: RtcEngine
     private lateinit var statusText: TextView
     private var isJoined = false
@@ -94,8 +104,9 @@ class MainActivity : AppCompatActivity() {
         // 初始化
         initButton.setOnClickListener {
             try {
-                engine.init("your_app_id", this)
-                statusText.text = "初始化成功"
+                engine.init(demoAppId, this)
+                engine.setSignalingServerUrl(demoSignalingUrl)
+                statusText.text = "初始化成功（信令: $demoSignalingUrl）"
                 Toast.makeText(this, "初始化成功", Toast.LENGTH_SHORT).show()
             } catch (e: Exception) {
                 statusText.text = "初始化失败: ${e.message}"
@@ -208,13 +219,23 @@ class MainActivity : AppCompatActivity() {
     }
     
     private fun getTokenFromServer(): String {
-        // 实际实现应该调用您的后端API获取Token
-        // 示例：
-        // val response = httpClient.get("https://your-api.com/api/rtc/token?channelId=channel_001&uid=user_001")
-        // return response.body()?.string()?.let { JSONObject(it).getString("token") } ?: ""
-        
-        // 这里返回示例Token，实际使用时请替换为真实的Token获取逻辑
-        return "your_token_here"
+        val channelId = "channel_001"
+        val uid = "user_001"
+        val url = "$demoApiBase/api/rtc/token?channelId=${java.net.URLEncoder.encode(channelId, "UTF-8")}&uid=${java.net.URLEncoder.encode(uid, "UTF-8")}&expireHours=24"
+        val client = OkHttpClient.Builder().connectTimeout(10, TimeUnit.SECONDS).readTimeout(10, TimeUnit.SECONDS).build()
+        val request = Request.Builder()
+            .url(url)
+            .post(okhttp3.RequestBody.create(null, ByteArray(0)))
+            .addHeader("X-App-Id", demoAppId)
+            .addHeader("X-App-Secret", demoAppSecret)
+            .build()
+        val response = client.newCall(request).execute()
+        if (!response.isSuccessful) throw Exception("获取 Token 失败: HTTP ${response.code}")
+        val body = response.body?.string() ?: throw Exception("Token 响应为空")
+        val json = JSONObject(body)
+        if (json.optInt("code", -1) != 0) throw Exception(json.optString("msg", "未知错误"))
+        val data = json.opt("data") ?: throw Exception("Token 响应无 data")
+        return data.toString().trim('"')
     }
     
     override fun onDestroy() {

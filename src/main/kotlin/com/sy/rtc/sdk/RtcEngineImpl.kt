@@ -122,12 +122,17 @@ internal class RtcEngineImpl(
     
     // 远端视频轨道
     private val remoteVideoTracks = ConcurrentHashMap<String, org.webrtc.VideoTrack>()
+    // 远端视频渲染器（便于 release 时移除）
+    private val remoteRenderers = ConcurrentHashMap<String, org.webrtc.SurfaceViewRenderer>()
+    private var eglBase: EglBase? = null
     
     // 频道状态
     private var currentChannelId: String? = null
     private var currentUid: String? = null
-    // join 传入 token：默认视为业务端 JWT（用于调用 /api/rtc/live/*）
+    // join 传入 token：RTC Token（用于加入频道）
     private var currentToken: String? = null
+    // 后端 API 认证用的 JWT（用于 /api/rtc/live/* 等）
+    private var apiAuthToken: String? = null
     private var isJoined = AtomicBoolean(false)
     
     // 事件处理器（需要从外部设置）
@@ -144,6 +149,10 @@ internal class RtcEngineImpl(
     private val pendingLocalIceByUid = ConcurrentHashMap<String, MutableList<IceCandidate>>() // 本地 ICE（在发 offer/answer 前缓存）
     private val pendingRemoteIceByUid = ConcurrentHashMap<String, MutableList<IceCandidate>>() // 远端 ICE（在 setRemoteDescription 前缓存）
 
+    private fun guessRemoteUid(): String {
+        return peerConnections.keys.firstOrNull { it != "default" } ?: ""
+    }
+
     fun setSignalingServerUrl(url: String) {
         if (url.isNotBlank()) {
             signalingUrl = url
@@ -154,15 +163,19 @@ internal class RtcEngineImpl(
         apiBaseUrl = url.trim().trimEnd('/')
     }
 
+    fun setApiAuthToken(token: String) {
+        apiAuthToken = token
+    }
+
     private fun postLiveApi(path: String, body: JSONObject) {
         val base = apiBaseUrl
-        val token = currentToken
+        val token = apiAuthToken ?: currentToken
         if (base.isNullOrEmpty()) {
             eventHandler?.onError(1001, "API_BASE_URL 未设置：请先调用 setApiBaseUrl() 或在 Flutter init 里传 apiBaseUrl")
             return
         }
         if (token.isNullOrEmpty()) {
-            eventHandler?.onError(1001, "缺少登录 token：join() 传入的 token 为空，无法调用直播控制接口")
+            eventHandler?.onError(1001, "缺少登录 token：请先调用 setApiAuthToken() 或在 join() 后设置")
             return
         }
         try {
@@ -268,12 +281,13 @@ internal class RtcEngineImpl(
             
             // 创建PeerConnectionFactory
             val options = PeerConnectionFactory.Options()
+            eglBase = EglBase.create()
             val encoderFactory = DefaultVideoEncoderFactory(
-                EglBase.create().eglBaseContext,
+                eglBase!!.eglBaseContext,
                 true, // enableIntelVP8Encoder
                 true  // enableH264HighProfile
             )
-            val decoderFactory = DefaultVideoDecoderFactory(EglBase.create().eglBaseContext)
+            val decoderFactory = DefaultVideoDecoderFactory(eglBase!!.eglBaseContext)
             
             peerConnectionFactory = PeerConnectionFactory.builder()
                 .setOptions(options)
@@ -300,8 +314,14 @@ internal class RtcEngineImpl(
     // ==================== 频道管理 ====================
     
     fun join(channelId: String, uid: String, token: String) {
+        if (channelId.isBlank() || uid.isBlank() || token.isBlank()) {
+            Log.e(TAG, "join 参数不能为空: channelId/uid/token")
+            eventHandler?.onError(1000, "channelId/uid/token 不能为空")
+            return
+        }
         if (isJoined.get()) {
             Log.w(TAG, "已经加入频道，请先离开")
+            eventHandler?.onError(1000, "已经加入频道，请先 leave()")
             return
         }
         
@@ -363,7 +383,13 @@ internal class RtcEngineImpl(
             localAudioTrack?.setEnabled(false)
             localVideoTrack?.setEnabled(false)
             
-            // 清理状态
+            // 清理远端渲染器（主线程）
+            android.os.Handler(android.os.Looper.getMainLooper()).post {
+                remoteRenderers.values.forEach { it.release() }
+                remoteRenderers.clear()
+            }
+            remoteVideoTracks.clear()
+            videoViews.keys.filter { it != "local" }.forEach { videoViews.remove(it) }
             currentChannelId = null
             currentUid = null
             currentToken = null
@@ -505,6 +531,15 @@ internal class RtcEngineImpl(
                     remoteSdpSetByUid.remove(uid)
                     pendingLocalIceByUid.remove(uid)
                     pendingRemoteIceByUid.remove(uid)
+                    remoteVideoTracks.remove(uid)
+                    val viewId = videoViews[uid]
+                    android.os.Handler(android.os.Looper.getMainLooper()).post {
+                        remoteRenderers.remove(uid)?.let { r ->
+                            r.release()
+                            (context as? android.app.Activity)?.findViewById<android.view.ViewGroup>(viewId ?: 0)?.removeView(r)
+                        }
+                        videoViews.remove(uid)
+                    }
                 }
             }
             "error" -> {
@@ -554,7 +589,21 @@ internal class RtcEngineImpl(
             override fun onRemoveStream(stream: MediaStream?) {}
             override fun onDataChannel(channel: DataChannel?) {}
             override fun onRenegotiationNeeded() {}
-            override fun onAddTrack(receiver: RtpReceiver?, streams: Array<out MediaStream>?) {}
+            override fun onAddTrack(receiver: RtpReceiver?, streams: Array<out MediaStream>?) {
+                receiver?.track()?.let { track ->
+                    if (track.kind() == org.webrtc.MediaStreamTrack.MEDIA_TRACK_TYPE_VIDEO) {
+                        val videoTrack = track as org.webrtc.VideoTrack
+                        remoteVideoTracks[remoteUid] = videoTrack
+                        videoMutedStates[remoteUid]?.let { muted -> videoTrack.setEnabled(!muted) }
+                        val viewId = videoViews[remoteUid]
+                        if (viewId != null) {
+                            android.os.Handler(android.os.Looper.getMainLooper()).post {
+                                bindRemoteVideoToView(remoteUid, videoTrack, viewId)
+                            }
+                        }
+                    }
+                }
+            }
         })
         
         if (pc == null) return null
@@ -821,30 +870,14 @@ internal class RtcEngineImpl(
     // ==================== 音频控制 ====================
     
     fun enableLocalAudio(enabled: Boolean) {
-        if (enabled) {
-            audioRecord?.startRecording()
-            Log.d(TAG, "启用本地音频采集")
-        } else {
-            audioRecord?.stop()
-            Log.d(TAG, "禁用本地音频采集")
-        }
+        localAudioTrack?.setEnabled(enabled)
+        Log.d(TAG, "启用/禁用本地音频: $enabled")
     }
     
     fun muteLocalAudio(muted: Boolean) {
         try {
-            if (muted) {
-                // 停止音频采集
-                audioRecord?.stop()
-                // 禁用本地音频轨道
-                localAudioTrack?.setEnabled(false)
-                Log.d(TAG, "本地音频已静音")
-            } else {
-                // 恢复音频采集
-                audioRecord?.startRecording()
-                // 启用本地音频轨道
-                localAudioTrack?.setEnabled(true)
-                Log.d(TAG, "本地音频已取消静音")
-            }
+            localAudioTrack?.setEnabled(!muted)
+            Log.d(TAG, "本地音频静音: $muted")
         } catch (e: Exception) {
             Log.e(TAG, "设置本地音频静音状态失败", e)
         }
@@ -948,14 +981,12 @@ internal class RtcEngineImpl(
     }
     
     fun enableAudio() {
-        audioRecord?.startRecording()
-        audioTrack?.play()
+        localAudioTrack?.setEnabled(true)
         Log.d(TAG, "启用音频模块")
     }
     
     fun disableAudio() {
-        audioRecord?.stop()
-        audioTrack?.pause()
+        localAudioTrack?.setEnabled(false)
         Log.d(TAG, "禁用音频模块")
     }
     
@@ -1290,30 +1321,37 @@ internal class RtcEngineImpl(
         }
     }
     
+    private fun bindRemoteVideoToView(uid: String, remoteTrack: org.webrtc.VideoTrack, viewId: Int) {
+        try {
+            val activity = context as? android.app.Activity ?: return
+            val container = activity.findViewById<android.view.ViewGroup>(viewId) ?: return
+            remoteRenderers[uid]?.let { old ->
+                old.release()
+                container.removeView(old)
+            }
+            val renderer = org.webrtc.SurfaceViewRenderer(context)
+            renderer.init(eglBase?.eglBaseContext, null)
+            renderer.setZOrderMediaOverlay(true)
+            remoteTrack.addSink(renderer)
+            videoMutedStates[uid]?.let { muted -> remoteTrack.setEnabled(!muted) }
+            container.addView(renderer, android.view.ViewGroup.LayoutParams.MATCH_PARENT, android.view.ViewGroup.LayoutParams.MATCH_PARENT)
+            remoteRenderers[uid] = renderer
+            Log.d(TAG, "远端视频已绑定到视图: uid=$uid")
+        } catch (e: Exception) {
+            Log.e(TAG, "绑定远端视频视图失败", e)
+        }
+    }
+    
     fun setupRemoteVideo(uid: String, viewId: Int) {
         videoViews[uid] = viewId
         Log.d(TAG, "设置远端视频视图: uid=$uid, viewId=$viewId")
-        
-        try {
-            // 从映射中获取远端视频轨道
-            val remoteTrack = remoteVideoTracks[uid]
-            if (remoteTrack != null) {
-                // 创建视频渲染器并绑定到视图
-                val renderer = org.webrtc.SurfaceViewRenderer(context)
-                renderer.init(EglBase.create().eglBaseContext, null)
-                remoteTrack.addSink(renderer)
-                
-                // 应用静音状态
-                videoMutedStates[uid]?.let { muted ->
-                    remoteTrack.setEnabled(!muted)
-                }
-                
-                Log.d(TAG, "远端视频视图已绑定: uid=$uid")
-            } else {
-                Log.w(TAG, "未找到远端视频轨道: uid=$uid")
+        val remoteTrack = remoteVideoTracks[uid]
+        if (remoteTrack != null) {
+            android.os.Handler(android.os.Looper.getMainLooper()).post {
+                bindRemoteVideoToView(uid, remoteTrack, viewId)
             }
-        } catch (e: Exception) {
-            Log.e(TAG, "设置远端视频视图失败", e)
+        } else {
+            Log.d(TAG, "远端轨道尚未到达，将在 onAddTrack 时自动绑定: uid=$uid")
         }
     }
     
@@ -1885,13 +1923,18 @@ internal class RtcEngineImpl(
                 dataChannelMap[streamId] = dataChannel
                 
                 // 设置DataChannel回调
+                val currentStreamId = streamId
                 dataChannel.registerObserver(object : DataChannel.Observer {
                     override fun onBufferedAmountChange(previousAmount: Long) {}
                     override fun onStateChange() {
                         Log.d(TAG, "DataChannel状态变化: ${dataChannel.state()}")
                     }
                     override fun onMessage(buffer: DataChannel.Buffer) {
-                        Log.d(TAG, "收到DataChannel消息: ${buffer.data.remaining()} bytes")
+                        val bytes = ByteArray(buffer.data.remaining())
+                        buffer.data.get(bytes)
+                        val remoteUid = guessRemoteUid()
+                        Log.d(TAG, "收到DataChannel消息: ${bytes.size} bytes, streamId=$currentStreamId, uid=$remoteUid")
+                        eventHandler?.onStreamMessage(remoteUid, currentStreamId, bytes)
                     }
                 })
             }
@@ -2023,6 +2066,8 @@ internal class RtcEngineImpl(
         localAudioTrack?.dispose()
         videoCapturer?.dispose()
         peerConnectionFactory?.dispose()
+        eglBase?.release()
+        eglBase = null
         
         // 释放RTMP资源
         rtmpStreams.keys.forEach { url ->
@@ -2038,18 +2083,20 @@ internal class RtcEngineImpl(
         dataChannelMap.values.forEach { it.close() }
         dataChannelMap.clear()
         
-        // 释放远端视频轨道
+        // 释放远端视频轨道与渲染器
         remoteVideoTracks.values.forEach { it.dispose() }
         remoteVideoTracks.clear()
+        android.os.Handler(android.os.Looper.getMainLooper()).post {
+            remoteRenderers.values.forEach { it.release() }
+            remoteRenderers.clear()
+        }
         
         // 释放PeerConnection
         peerConnections.values.forEach { it.dispose() }
         peerConnections.clear()
         
-        // 停止所有旁路推流
-        rtmpStreams.keys.forEach { url ->
-            stopRtmpStream(url)
-        }
+        // 停止所有旁路推流（先复制 keys 避免并发修改）
+        rtmpStreams.keys.toList().forEach { url -> stopRtmpStream(url) }
         
         // 清理所有状态
         effects.clear()

@@ -34,6 +34,26 @@ interface RtcEventHandler {
      * @param message 错误信息
      */
     fun onError(code: Int, message: String) {}
+
+    /**
+     * 数据流消息回调
+     *
+     * @param uid 发送方用户ID（未知时可能为空字符串）
+     * @param streamId 数据流ID
+     * @param data 二进制数据
+     */
+    fun onStreamMessage(uid: String, streamId: Int, data: ByteArray) {}
+
+    /**
+     * 数据流消息错误回调
+     *
+     * @param uid 发送方用户ID（未知时可能为空字符串）
+     * @param streamId 数据流ID
+     * @param code 错误码
+     * @param missed 丢失消息数
+     * @param cached 缓存消息数
+     */
+    fun onStreamMessageError(uid: String, streamId: Int, code: Int, missed: Int, cached: Int) {}
 }
 
 /**
@@ -43,4 +63,3 @@ data class VolumeInfo(
     val uid: String,
     val volume: Int
 )
-
