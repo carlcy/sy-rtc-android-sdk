@@ -22,9 +22,9 @@ import java.util.concurrent.TimeUnit
 
 class MainActivity : AppCompatActivity() {
     // 部署 Demo 后端后，改为你的服务器地址（与 deploy 的 SERVER_IP 一致）
-    private val demoServerHost = "47.105.48.196"
-    private val demoApiBase = "http://$demoServerHost/demo-api"
-    private val demoSignalingUrl = "ws://$demoServerHost/ws/signaling"
+    private val demoServerHost = "syrtcapi.shengyuchenyao.cn"
+    private val demoApiBase = "https://$demoServerHost/demo-api"
+    private val demoSignalingUrl = "wss://$demoServerHost/ws/signaling"
     private val demoAppId = "your_app_id"
     private val demoAppSecret = "your_app_secret"
     private lateinit var engine: RtcEngine

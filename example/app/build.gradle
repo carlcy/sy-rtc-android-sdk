@@ -12,7 +12,7 @@ android {
         minSdk 21
         targetSdk 34
         versionCode 1
-        versionName "1.3.0"
+        versionName "1.3.1"
     }
 
     buildTypes {
@@ -39,14 +39,8 @@ dependencies {
     implementation 'androidx.constraintlayout:constraintlayout:2.1.4'
     implementation 'com.squareup.okhttp3:okhttp:4.12.0'
     
-    // 使用 JitPack 依赖（推荐，与发布版本同步）
-    implementation 'com.github.carlcy:sy-rtc-android-sdk:v1.2.0'
-
-    // 或使用 Maven Central（如已发布）
-    // implementation 'com.sy.rtc:sy-rtc-android-sdk:1.2.0'
-
-    // 或使用本地 AAR（不推荐，容易把二进制误提交到仓库）
-    // implementation(name: 'sy-rtc-android-sdk-release', ext: 'aar')
+    // 使用 JitPack 依赖（与发布版本同步）
+    implementation 'com.github.carlcy:sy-rtc-android-sdk:v1.3.1'
 }
 
 // repositories 已在 settings.gradle 的 dependencyResolutionManagement 中声明（FAIL_ON_PROJECT_REPOS）

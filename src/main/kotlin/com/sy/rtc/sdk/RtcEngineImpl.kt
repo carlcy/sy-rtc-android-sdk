@@ -141,7 +141,7 @@ internal class RtcEngineImpl(
     // 信令客户端
     private var signalingClient: SignalingClient? = null
     // 默认走 Nginx（80/443），避免客户端直连 8087；生产建议改成你自己的域名 + wss
-    private var signalingUrl: String = "ws://47.105.48.196/ws/signaling"
+    private var signalingUrl: String = "wss://syrtcapi.shengyuchenyao.cn/ws/signaling"
     
     // 多人语聊（Mesh）：每个远端用户一条 PeerConnection（key=remoteUid）
     private val offerSentByUid = ConcurrentHashMap<String, AtomicBoolean>()
@@ -267,25 +267,23 @@ internal class RtcEngineImpl(
     
     init {
         audioManager = context.getSystemService(Context.AUDIO_SERVICE) as? AudioManager
-        initializeAudioDevices()
-        initializeWebRTC()
+        try { initializeAudioDevices() } catch (t: Throwable) { Log.e(TAG, "initializeAudioDevices failed", t) }
+        try { initializeWebRTC() } catch (t: Throwable) { Log.e(TAG, "initializeWebRTC failed", t) }
     }
     
     private fun initializeWebRTC() {
         try {
-            // 初始化WebRTC
             val initializationOptions = PeerConnectionFactory.InitializationOptions.builder(context)
-                .setEnableInternalTracer(true)
+                .setEnableInternalTracer(false)
                 .createInitializationOptions()
             PeerConnectionFactory.initialize(initializationOptions)
             
-            // 创建PeerConnectionFactory
             val options = PeerConnectionFactory.Options()
             eglBase = EglBase.create()
             val encoderFactory = DefaultVideoEncoderFactory(
                 eglBase!!.eglBaseContext,
-                true, // enableIntelVP8Encoder
-                true  // enableH264HighProfile
+                true,
+                true
             )
             val decoderFactory = DefaultVideoDecoderFactory(eglBase!!.eglBaseContext)
             
@@ -296,8 +294,8 @@ internal class RtcEngineImpl(
                 .createPeerConnectionFactory()
             
             Log.d(TAG, "WebRTC初始化成功")
-        } catch (e: Exception) {
-            Log.e(TAG, "WebRTC初始化失败", e)
+        } catch (t: Throwable) {
+            Log.e(TAG, "WebRTC初始化失败", t)
         }
     }
     
@@ -591,7 +589,7 @@ internal class RtcEngineImpl(
             override fun onRenegotiationNeeded() {}
             override fun onAddTrack(receiver: RtpReceiver?, streams: Array<out MediaStream>?) {
                 receiver?.track()?.let { track ->
-                    if (track.kind() == org.webrtc.MediaStreamTrack.MEDIA_TRACK_TYPE_VIDEO) {
+                    if (track.kind() == "video") {
                         val videoTrack = track as org.webrtc.VideoTrack
                         remoteVideoTracks[remoteUid] = videoTrack
                         videoMutedStates[remoteUid]?.let { muted -> videoTrack.setEnabled(!muted) }
@@ -814,13 +812,39 @@ internal class RtcEngineImpl(
                 playbackDevices.add(AudioDeviceInfo("earpiece", "听筒"))
             }
             
-            // 检查蓝牙设备
-            val bluetoothAdapter = BluetoothAdapter.getDefaultAdapter()
-            if (bluetoothAdapter != null && bluetoothAdapter.isEnabled) {
-                val bluetoothHeadset = bluetoothAdapter.getProfileProxy(
-                    context,
-                    object : android.bluetooth.BluetoothProfile.ServiceListener {
-                        override fun onServiceConnected(profile: Int, proxy: android.bluetooth.BluetoothProfile) {
+            // 检查蓝牙设备（Android 12+ 需要 BLUETOOTH_CONNECT 权限）
+            try {
+                val bluetoothAdapter = BluetoothAdapter.getDefaultAdapter()
+                if (bluetoothAdapter != null && bluetoothAdapter.isEnabled) {
+                    if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.S) {
+                        if (context.checkSelfPermission(android.Manifest.permission.BLUETOOTH_CONNECT) != android.content.pm.PackageManager.PERMISSION_GRANTED) {
+                            Log.d(TAG, "缺少 BLUETOOTH_CONNECT 权限，跳过蓝牙设备枚举")
+                        } else {
+                            enumerateBluetoothDevices(bluetoothAdapter)
+                        }
+                    } else {
+                        enumerateBluetoothDevices(bluetoothAdapter)
+                    }
+                }
+            } catch (t: Throwable) {
+                Log.w(TAG, "蓝牙设备枚举失败（忽略）", t)
+            }
+            
+            Log.d(TAG, "音频设备枚举完成: 录音设备=${recordingDevices.size}, 播放设备=${playbackDevices.size}")
+        } catch (t: Throwable) {
+            Log.e(TAG, "音频设备枚举失败", t)
+            recordingDevices.add(AudioDeviceInfo("default", "默认麦克风"))
+            playbackDevices.add(AudioDeviceInfo("default", "默认扬声器"))
+        }
+    }
+
+    private fun enumerateBluetoothDevices(bluetoothAdapter: BluetoothAdapter) {
+        try {
+            bluetoothAdapter.getProfileProxy(
+                context,
+                object : android.bluetooth.BluetoothProfile.ServiceListener {
+                    override fun onServiceConnected(profile: Int, proxy: android.bluetooth.BluetoothProfile) {
+                        try {
                             if (profile == android.bluetooth.BluetoothProfile.HEADSET) {
                                 val headset = proxy as? BluetoothHeadset
                                 if (headset != null && headset.connectedDevices.isNotEmpty()) {
@@ -828,19 +852,16 @@ internal class RtcEngineImpl(
                                     recordingDevices.add(AudioDeviceInfo("bluetooth", "蓝牙麦克风"))
                                 }
                             }
+                        } catch (t: Throwable) {
+                            Log.w(TAG, "蓝牙设备枚举回调异常（忽略）", t)
                         }
-                        override fun onServiceDisconnected(profile: Int) {}
-                    },
-                    android.bluetooth.BluetoothProfile.HEADSET
-                )
-            }
-            
-            Log.d(TAG, "音频设备枚举完成: 录音设备=${recordingDevices.size}, 播放设备=${playbackDevices.size}")
-        } catch (e: Exception) {
-            Log.e(TAG, "音频设备枚举失败", e)
-            // 失败时添加默认设备
-            recordingDevices.add(AudioDeviceInfo("default", "默认麦克风"))
-            playbackDevices.add(AudioDeviceInfo("default", "默认扬声器"))
+                    }
+                    override fun onServiceDisconnected(profile: Int) {}
+                },
+                android.bluetooth.BluetoothProfile.HEADSET
+            )
+        } catch (t: Throwable) {
+            Log.w(TAG, "蓝牙 ProfileProxy 请求失败", t)
         }
     }
     

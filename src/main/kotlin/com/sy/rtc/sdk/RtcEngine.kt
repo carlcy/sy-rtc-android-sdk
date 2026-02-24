@@ -55,7 +55,7 @@ class RtcEngine private constructor() {
      * 设置信令服务器 WebSocket 地址
      *
      * 示例：
-     * - ws://47.105.48.196/ws/signaling
+     * - wss://syrtcapi.shengyuchenyao.cn/ws/signaling
      * - wss://your-domain.com/ws/signaling
      */
     fun setSignalingServerUrl(url: String) {
@@ -66,7 +66,7 @@ class RtcEngine private constructor() {
      * 设置后端 API Base URL（用于直播旁路：开播/关播/切布局/更新转码等）
      *
      * 示例：
-     * - http://47.105.48.196
+     * - https://syrtcapi.shengyuchenyao.cn
      * - https://your-domain.com
      */
     fun setApiBaseUrl(url: String) {
@@ -76,7 +76,7 @@ class RtcEngine private constructor() {
     /**
      * 设置后端 API 认证 Token（JWT）
      *
-     * 用于调用 /api/rtc/live/* 等需要登录认证的接口。
+     * 用于调用 /api/rtc/live/ 等需要登录认证的接口。
      * 注意：join() 里的 token 是 RTC Token，与该 JWT 不同。
      */
     fun setApiAuthToken(token: String) {
