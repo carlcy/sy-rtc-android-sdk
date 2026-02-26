@@ -1,5 +1,16 @@
 # SY RTC Android SDK 更新日志
 
+## 2.1.0
+
+### 新增 RoomService — 房间管理服务
+
+- `RoomService` 类：房间管理 + Token 获取
+  - `getRoomList()` / `createRoom()` / `closeRoom()` / `getRoomDetail()`
+  - `fetchToken()` / `getOnlineCount()`
+- `RoomInfo` 数据类
+
+---
+
 ## 2.0.0 (Breaking Change)
 
 ### 架构调整
