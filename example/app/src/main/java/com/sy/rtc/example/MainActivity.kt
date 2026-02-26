@@ -21,12 +21,10 @@ import org.json.JSONObject
 import java.util.concurrent.TimeUnit
 
 class MainActivity : AppCompatActivity() {
-    // 部署 Demo 后端后，改为你的服务器地址（与 deploy 的 SERVER_IP 一致）
-    private val demoServerHost = "syrtcapi.shengyuchenyao.cn"
-    private val demoApiBase = "https://$demoServerHost/demo-api"
-    private val demoSignalingUrl = "wss://$demoServerHost/ws/signaling"
-    private val demoAppId = "your_app_id"
-    private val demoAppSecret = "your_app_secret"
+    private val demoApiBase = "https://syrtcapi.shengyuchenyao.cn/demo-api"
+    private val demoSignalingUrl = "wss://syrtcapi.shengyuchenyao.cn/ws/signaling"
+    private val demoAppId = "APP1769003318261114285E3"
+    private val demoAppSecret = "524d401de4c34ad1b554f2b35fe74d6f4f8f7e55614146069b527c1f8799b488"
     private lateinit var engine: RtcEngine
     private lateinit var statusText: TextView
     private var isJoined = false
@@ -190,20 +188,29 @@ class MainActivity : AppCompatActivity() {
     }
     
     private fun joinChannel() {
-        try {
-            // 从服务器获取Token（实际使用时需要实现HTTP请求）
-            val token = getTokenFromServer()
-            
-            engine.join("channel_001", "user_001", token)
-            engine.enableLocalAudio(true)
-            
-            isJoined = true
-            statusText.text = "加入房间成功"
-            Toast.makeText(this, "加入房间成功", Toast.LENGTH_SHORT).show()
-        } catch (e: Exception) {
-            statusText.text = "加入房间失败: ${e.message}"
-            Toast.makeText(this, "加入房间失败: ${e.message}", Toast.LENGTH_SHORT).show()
-        }
+        statusText.text = "正在获取Token..."
+        Thread {
+            try {
+                val token = getTokenFromServer()
+                runOnUiThread {
+                    try {
+                        engine.join("channel_001", "user_001", token)
+                        engine.enableLocalAudio(true)
+                        isJoined = true
+                        statusText.text = "加入房间成功"
+                        Toast.makeText(this, "加入房间成功", Toast.LENGTH_SHORT).show()
+                    } catch (e: Exception) {
+                        statusText.text = "加入房间失败: ${e.message}"
+                        Toast.makeText(this, "加入房间失败: ${e.message}", Toast.LENGTH_SHORT).show()
+                    }
+                }
+            } catch (e: Exception) {
+                runOnUiThread {
+                    statusText.text = "加入房间失败: ${e.message ?: e.javaClass.simpleName}"
+                    Toast.makeText(this, "加入房间失败: ${e.message ?: e.javaClass.simpleName}", Toast.LENGTH_SHORT).show()
+                }
+            }
+        }.start()
     }
     
     private fun leaveChannel() {

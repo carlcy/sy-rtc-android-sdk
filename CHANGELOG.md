@@ -1,5 +1,22 @@
 # SY RTC Android SDK 更新日志
 
+## 1.4.0
+
+### 新功能
+
+- **频道消息**：新增 `sendChannelMessage(message)` 方法和 `onChannelMessage(uid, message)` 回调，支持向频道内所有用户广播自定义消息
+- **在线人数修复**：修复后加入的用户收到 `user-list` 时不触发 `onUserJoined` 的问题，现在在线人数对所有用户一致
+
+### 改进
+
+- **Demo 地址**：示例 App 中 API/信令地址改为域名
+
+### 升级说明
+
+- 依赖：`com.sy.rtc:sy-rtc-android-sdk:1.4.0`
+
+---
+
 ## 1.3.0
 
 ### 语音功能修复与稳定性

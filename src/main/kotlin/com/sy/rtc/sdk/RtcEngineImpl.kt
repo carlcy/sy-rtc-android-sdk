@@ -279,7 +279,12 @@ internal class RtcEngineImpl(
             PeerConnectionFactory.initialize(initializationOptions)
             
             val options = PeerConnectionFactory.Options()
-            eglBase = EglBase.create()
+            eglBase = try {
+                EglBase.create()
+            } catch (t: Throwable) {
+                Log.w(TAG, "EglBase.create() 失败，尝试 createEgl14", t)
+                EglBase.createEgl14(EglBase.CONFIG_PLAIN)
+            }
             val encoderFactory = DefaultVideoEncoderFactory(
                 eglBase!!.eglBaseContext,
                 true,
@@ -411,6 +416,7 @@ internal class RtcEngineImpl(
                     else -> emptyList()
                 }
                 users.filter { it != currentUid }.forEach { remote ->
+                    eventHandler?.onUserJoined(remote, 0)
                     ensurePeer(remote, channelId)
                     if (shouldInitiateOffer(currentUid, remote)) {
                         startOffer(remote, channelId)
@@ -539,6 +545,11 @@ internal class RtcEngineImpl(
                         videoViews.remove(uid)
                     }
                 }
+            }
+            "channel-message" -> {
+                val fromUid = (data["uid"] as? String) ?: ""
+                val msg = (data["message"] as? String) ?: ""
+                eventHandler?.onChannelMessage(fromUid, msg)
             }
             "error" -> {
                 val msg = (data["error"] as? String) ?: "信令错误"
@@ -840,11 +851,23 @@ internal class RtcEngineImpl(
 
     private fun enumerateBluetoothDevices(bluetoothAdapter: BluetoothAdapter) {
         try {
+            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.S) {
+                if (context.checkSelfPermission(android.Manifest.permission.BLUETOOTH_CONNECT) != android.content.pm.PackageManager.PERMISSION_GRANTED) {
+                    Log.d(TAG, "缺少 BLUETOOTH_CONNECT 权限，跳过蓝牙 ProfileProxy")
+                    return
+                }
+            }
             bluetoothAdapter.getProfileProxy(
                 context,
                 object : android.bluetooth.BluetoothProfile.ServiceListener {
                     override fun onServiceConnected(profile: Int, proxy: android.bluetooth.BluetoothProfile) {
                         try {
+                            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.S) {
+                                if (context.checkSelfPermission(android.Manifest.permission.BLUETOOTH_CONNECT) != android.content.pm.PackageManager.PERMISSION_GRANTED) {
+                                    Log.d(TAG, "回调时缺少 BLUETOOTH_CONNECT 权限，跳过")
+                                    return
+                                }
+                            }
                             if (profile == android.bluetooth.BluetoothProfile.HEADSET) {
                                 val headset = proxy as? BluetoothHeadset
                                 if (headset != null && headset.connectedDevices.isNotEmpty()) {
@@ -895,6 +918,14 @@ internal class RtcEngineImpl(
         Log.d(TAG, "启用/禁用本地音频: $enabled")
     }
     
+    fun sendChannelMessage(message: String) {
+        if (!isJoined.get()) {
+            Log.w(TAG, "未加入频道，无法发送频道消息")
+            return
+        }
+        signalingClient?.sendChannelMessage(message)
+    }
+
     fun muteLocalAudio(muted: Boolean) {
         try {
             localAudioTrack?.setEnabled(!muted)

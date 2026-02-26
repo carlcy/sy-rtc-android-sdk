@@ -114,6 +114,19 @@ internal class SignalingClient(
         send(message.toString())
     }
     
+    fun sendChannelMessage(msg: String) {
+        val message = JSONObject().apply {
+            put("type", "channel-message")
+            put("channelId", channelId)
+            put("uid", uid)
+            put("data", JSONObject().apply {
+                put("uid", uid)
+                put("message", msg)
+            })
+        }
+        send(message.toString())
+    }
+
     fun sendLeave() {
         val message = JSONObject().apply {
             put("type", "leave")

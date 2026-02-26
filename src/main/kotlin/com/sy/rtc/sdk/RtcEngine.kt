@@ -120,6 +120,15 @@ class RtcEngine private constructor() {
     }
 
     /**
+     * 发送频道消息（广播给频道内所有用户）
+     *
+     * @param message 消息内容（通常为JSON字符串）
+     */
+    fun sendChannelMessage(message: String) {
+        impl?.sendChannelMessage(message)
+    }
+
+    /**
      * 设置客户端角色
      * 
      * @param role 角色：RtcClientRole.HOST 或 RtcClientRole.AUDIENCE

@@ -54,6 +54,14 @@ interface RtcEventHandler {
      * @param cached 缓存消息数
      */
     fun onStreamMessageError(uid: String, streamId: Int, code: Int, missed: Int, cached: Int) {}
+
+    /**
+     * 频道消息回调
+     *
+     * @param uid 发送方用户ID
+     * @param message 消息内容（JSON字符串）
+     */
+    fun onChannelMessage(uid: String, message: String) {}
 }
 
 /**
