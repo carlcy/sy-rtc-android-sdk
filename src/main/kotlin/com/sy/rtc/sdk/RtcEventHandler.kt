@@ -62,6 +62,27 @@ interface RtcEventHandler {
      * @param message 消息内容（JSON字符串）
      */
     fun onChannelMessage(uid: String, message: String) {}
+
+    // Room management
+    fun onRoomInfoUpdated(operatorUid: String, roomInfo: Map<String, Any?>) {}
+    fun onRoomNoticeUpdated(operatorUid: String, notice: String) {}
+    fun onRoomManagerUpdated(uid: String, isManager: Boolean, operatorUid: String) {}
+
+    // Seat management
+    fun onSeatUpdated(seatIndex: Int, uid: String?, operatorUid: String, action: String) {}
+    fun onSeatRequestReceived(uid: String, seatIndex: Int?) {}
+    fun onSeatRequestHandled(operatorUid: String, approved: Boolean, seatIndex: Int?) {}
+    fun onSeatInvitationReceived(operatorUid: String, seatIndex: Int) {}
+    fun onSeatInvitationHandled(uid: String, accepted: Boolean, seatIndex: Int) {}
+
+    // User management
+    fun onUserKicked(uid: String, operatorUid: String) {}
+    fun onUserMuted(uid: String, isMuted: Boolean, operatorUid: String) {}
+    fun onUserBanned(uid: String, isBanned: Boolean, operatorUid: String) {}
+
+    // Chat & Gift
+    fun onRoomMessage(uid: String, messageType: String, content: String, extra: Map<String, Any?>?) {}
+    fun onGiftReceived(fromUid: String, toUid: String, giftId: String, count: Int, extra: Map<String, Any?>?) {}
 }
 
 /**
