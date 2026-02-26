@@ -3,6 +3,7 @@ package com.sy.rtc.example
 import android.Manifest
 import android.content.pm.PackageManager
 import android.os.Bundle
+import android.util.Log
 import android.view.SurfaceView
 import android.widget.Button
 import android.widget.TextView
@@ -21,6 +22,7 @@ import org.json.JSONObject
 import java.util.concurrent.TimeUnit
 
 class MainActivity : AppCompatActivity() {
+    private val TAG = "RtcExample"
     private val demoApiBase = "http://47.105.48.196/demo-api"
     private val demoSignalingUrl = "ws://47.105.48.196/ws/signaling"
     private val demoAppId = "APP1769003318261114285E3"
@@ -60,12 +62,77 @@ class MainActivity : AppCompatActivity() {
         engine = RtcEngine.create()
         
         // 设置事件处理器
-        engine.setEventHandler(object : RtcEventHandler {
+        engine.setEventHandler(object : RtcEventHandler() {
+            override fun onJoinChannelSuccess(channelId: String, uid: String, elapsed: Int) {
+                Log.d(TAG, "加入频道成功: $channelId ($uid, $elapsed ms)")
+                runOnUiThread {
+                    statusText.text = "加入频道成功: $channelId ($uid, ${elapsed}ms)"
+                }
+            }
+
+            override fun onLeaveChannel(stats: Map<String, Any?>) {
+                Log.d(TAG, "已离开频道")
+                runOnUiThread {
+                    statusText.text = "已离开频道"
+                }
+            }
+
+            override fun onRejoinChannelSuccess(channelId: String, uid: String, elapsed: Int) {
+                Log.d(TAG, "重连成功")
+                runOnUiThread {
+                    statusText.text = "重连成功"
+                }
+            }
+
+            override fun onConnectionStateChanged(state: String, reason: String) {
+                Log.d(TAG, "连接状态变化: state=$state, reason=$reason")
+                runOnUiThread {
+                    statusText.text = "连接: $state ($reason)"
+                }
+            }
+
+            override fun onNetworkQuality(uid: String, txQuality: String, rxQuality: String) {
+                val isPoor = txQuality.equals("poor", ignoreCase = true) ||
+                    rxQuality.equals("poor", ignoreCase = true) ||
+                    txQuality.equals("bad", ignoreCase = true) ||
+                    rxQuality.equals("bad", ignoreCase = true)
+                if (isPoor) {
+                    Log.w(TAG, "网络质量差: uid=$uid, tx=$txQuality, rx=$rxQuality")
+                }
+            }
+
+            override fun onUserMuteAudio(uid: String, muted: Boolean) {
+                Log.d(TAG, "远端用户静音: uid=$uid, muted=$muted")
+            }
+
+            override fun onLocalAudioStateChanged(state: String, error: String) {
+                Log.d(TAG, "本地音频状态: state=$state, error=$error")
+            }
+
+            override fun onRemoteAudioStateChanged(uid: String, state: String, reason: String, elapsed: Int) {
+                Log.d(TAG, "远端音频状态: uid=$uid, state=$state, reason=$reason, elapsed=${elapsed}ms")
+            }
+
+            override fun onAudioRoutingChanged(routing: Int) {
+                Log.d(TAG, "音频路由变化: routing=$routing")
+            }
+
+            override fun onTokenPrivilegeWillExpire() {
+                Log.w(TAG, "Token 即将过期，请尽快续期")
+            }
+
+            override fun onError(code: Int, message: String) {
+                Log.e(TAG, "错误: code=$code, message=$message")
+                runOnUiThread {
+                    statusText.text = "错误: $code $message"
+                }
+            }
+
             override fun onUserJoined(uid: String, elapsed: Int) {
                 runOnUiThread {
                     statusText.text = "用户加入: $uid (耗时: ${elapsed}ms)"
                     Toast.makeText(this@MainActivity, "用户加入: $uid", Toast.LENGTH_SHORT).show()
-                    
+
                     // 设置远端视频视图
                     try {
                         val remoteVideoView: SurfaceView = findViewById(R.id.remoteVideoView)
@@ -75,26 +142,20 @@ class MainActivity : AppCompatActivity() {
                     }
                 }
             }
-            
+
             override fun onUserOffline(uid: String, reason: String) {
                 runOnUiThread {
                     statusText.text = "用户离开: $uid (reason=$reason)"
                     Toast.makeText(this@MainActivity, "用户离开: $uid", Toast.LENGTH_SHORT).show()
                 }
             }
-            
+
             override fun onVolumeIndication(speakers: List<VolumeInfo>) {
                 runOnUiThread {
                     if (speakers.isNotEmpty()) {
                         val info = speakers[0]
                         statusText.text = "音量指示: ${info.uid} = ${info.volume}"
                     }
-                }
-            }
-
-            override fun onError(code: Int, message: String) {
-                runOnUiThread {
-                    statusText.text = "错误: $code $message"
                 }
             }
         })

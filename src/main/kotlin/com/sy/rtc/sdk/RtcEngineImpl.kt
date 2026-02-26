@@ -129,6 +129,7 @@ internal class RtcEngineImpl(
     // 频道状态
     private var currentChannelId: String? = null
     private var currentUid: String? = null
+    private var joinStartTime: Long = 0
     // join 传入 token：RTC Token（用于加入频道）
     private var currentToken: String? = null
     // 后端 API 认证用的 JWT（用于 /api/rtc/live/* 等）
@@ -332,7 +333,9 @@ internal class RtcEngineImpl(
         currentUid = uid
         currentToken = token
         // 加入频道即视为“已加入”（即便房间内暂时没有其他人）
+        joinStartTime = System.currentTimeMillis()
         isJoined.set(true)
+        eventHandler?.onConnectionStateChanged("connecting", "join")
         // 清理多人会话状态
         offerSentByUid.clear()
         remoteSdpSetByUid.clear()
@@ -346,7 +349,10 @@ internal class RtcEngineImpl(
             signalingClient = SignalingClient(
                 signalingUrl, channelId, uid,
                 onMessage = { type, data -> handleSignalingMessage(type, data, channelId) },
-                onConnectionFailure = { eventHandler?.onError(1003, "信令连接失败") }
+                onConnectionFailure = {
+                eventHandler?.onConnectionStateChanged("failed", "connection_failed")
+                eventHandler?.onError(1003, "信令连接失败")
+            }
             )
             signalingClient?.connect()
             
@@ -393,6 +399,15 @@ internal class RtcEngineImpl(
             }
             remoteVideoTracks.clear()
             videoViews.keys.filter { it != "local" }.forEach { videoViews.remove(it) }
+            val stats = mapOf<String, Any?>(
+                "duration" to 0,
+                "txBytes" to 0,
+                "rxBytes" to 0,
+                "txPacketLossRate" to 0.0,
+                "rxPacketLossRate" to 0.0
+            )
+            eventHandler?.onLeaveChannel(stats)
+            eventHandler?.onConnectionStateChanged("disconnected", "leave")
             currentChannelId = null
             currentUid = null
             currentToken = null
@@ -409,6 +424,10 @@ internal class RtcEngineImpl(
         
         when (type) {
             "user-list" -> {
+                // 信令确认加入成功，触发 onJoinChannelSuccess
+                val elapsed = (System.currentTimeMillis() - joinStartTime).toInt().coerceAtLeast(0)
+                eventHandler?.onJoinChannelSuccess(channelId, currentUid ?: "", elapsed)
+                eventHandler?.onConnectionStateChanged("connected", "user-list")
                 val usersAny = data["users"]
                 val users: List<String> = when (usersAny) {
                     is org.json.JSONArray -> (0 until usersAny.length()).mapNotNull { idx -> usersAny.optString(idx)?.takeIf { it.isNotBlank() } }
@@ -550,51 +569,12 @@ internal class RtcEngineImpl(
                 val fromUid = (data["uid"] as? String) ?: ""
                 val msg = (data["message"] as? String) ?: ""
                 eventHandler?.onChannelMessage(fromUid, msg)
-                dispatchRoomMessage(fromUid, msg)
             }
             "error" -> {
                 val msg = (data["error"] as? String) ?: "信令错误"
                 eventHandler?.onError(1002, msg)
             }
         }
-    }
-
-    private fun dispatchRoomMessage(uid: String, rawMessage: String) {
-        try {
-            val json = org.json.JSONObject(rawMessage)
-            if (json.optString("_sy_type") != "room-msg") return
-            val action = json.optString("action")
-            val data = json.optJSONObject("data") ?: org.json.JSONObject()
-
-            when (action) {
-                "room-info-update" -> {
-                    val roomInfo = data.optJSONObject("roomInfo")?.let { jsonToMap(it) } ?: emptyMap()
-                    eventHandler?.onRoomInfoUpdated(uid, roomInfo)
-                }
-                "room-notice-update" -> eventHandler?.onRoomNoticeUpdated(uid, data.optString("notice"))
-                "manager-update" -> eventHandler?.onRoomManagerUpdated(data.optString("uid"), data.optBoolean("isManager"), uid)
-                "seat-take" -> eventHandler?.onSeatUpdated(data.optInt("seatIndex"), uid, uid, "take")
-                "seat-leave" -> eventHandler?.onSeatUpdated(-1, null, uid, "leave")
-                "seat-kick" -> eventHandler?.onSeatUpdated(-1, data.optString("uid"), uid, "kick")
-                "seat-lock" -> eventHandler?.onSeatUpdated(data.optInt("seatIndex"), null, uid, if (data.optBoolean("locked")) "lock" else "unlock")
-                "seat-mute" -> eventHandler?.onSeatUpdated(data.optInt("seatIndex"), null, uid, if (data.optBoolean("muted")) "mute" else "unmute")
-                "seat-request" -> eventHandler?.onSeatRequestReceived(uid, if (data.has("seatIndex") && !data.isNull("seatIndex")) data.optInt("seatIndex") else null)
-                "seat-request-handle" -> eventHandler?.onSeatRequestHandled(uid, data.optBoolean("approved"), if (data.has("seatIndex") && !data.isNull("seatIndex")) data.optInt("seatIndex") else null)
-                "seat-invite" -> eventHandler?.onSeatInvitationReceived(uid, data.optInt("seatIndex"))
-                "seat-invite-handle" -> eventHandler?.onSeatInvitationHandled(uid, data.optBoolean("accepted"), data.optInt("seatIndex"))
-                "user-kick" -> eventHandler?.onUserKicked(data.optString("uid"), uid)
-                "user-mute" -> eventHandler?.onUserMuted(data.optString("uid"), data.optBoolean("muted"), uid)
-                "user-ban" -> eventHandler?.onUserBanned(data.optString("uid"), data.optBoolean("banned"), uid)
-                "room-chat" -> eventHandler?.onRoomMessage(uid, data.optString("messageType", "text"), data.optString("content"), if (data.has("extra") && !data.isNull("extra")) jsonToMap(data.optJSONObject("extra")!!) else null)
-                "gift" -> eventHandler?.onGiftReceived(uid, data.optString("toUid"), data.optString("giftId"), data.optInt("count", 1), if (data.has("extra") && !data.isNull("extra")) jsonToMap(data.optJSONObject("extra")!!) else null)
-            }
-        } catch (_: Exception) {}
-    }
-
-    private fun jsonToMap(json: org.json.JSONObject): Map<String, Any?> {
-        val map = mutableMapOf<String, Any?>()
-        json.keys().forEach { key -> map[key] = json.opt(key) }
-        return map
     }
 
     private fun shouldInitiateOffer(localUid: String?, remoteUid: String): Boolean {
