@@ -1,5 +1,17 @@
 # SY RTC Android SDK 更新日志
 
+## 1.4.1
+
+### 修复
+
+- **Demo 地址**：SDK 默认信令地址和示例 App 改回 IP 直连（域名备案进行中）
+
+### 升级说明
+
+- 依赖：`com.sy.rtc:sy-rtc-android-sdk:1.4.1`
+
+---
+
 ## 1.4.0
 
 ### 新功能

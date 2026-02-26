@@ -141,7 +141,7 @@ internal class RtcEngineImpl(
     // 信令客户端
     private var signalingClient: SignalingClient? = null
     // 默认走 Nginx（80/443），避免客户端直连 8087；生产建议改成你自己的域名 + wss
-    private var signalingUrl: String = "wss://syrtcapi.shengyuchenyao.cn/ws/signaling"
+    private var signalingUrl: String = "ws://47.105.48.196/ws/signaling"
     
     // 多人语聊（Mesh）：每个远端用户一条 PeerConnection（key=remoteUid）
     private val offerSentByUid = ConcurrentHashMap<String, AtomicBoolean>()

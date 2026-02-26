@@ -55,7 +55,7 @@ class RtcEngine private constructor() {
      * 设置信令服务器 WebSocket 地址
      *
      * 示例：
-     * - wss://syrtcapi.shengyuchenyao.cn/ws/signaling
+     * - ws://47.105.48.196/ws/signaling
      * - wss://your-domain.com/ws/signaling
      */
     fun setSignalingServerUrl(url: String) {
@@ -66,7 +66,7 @@ class RtcEngine private constructor() {
      * 设置后端 API Base URL（用于直播旁路：开播/关播/切布局/更新转码等）
      *
      * 示例：
-     * - https://syrtcapi.shengyuchenyao.cn
+     * - http://47.105.48.196
      * - https://your-domain.com
      */
     fun setApiBaseUrl(url: String) {

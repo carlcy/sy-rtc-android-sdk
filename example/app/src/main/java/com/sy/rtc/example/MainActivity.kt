@@ -21,8 +21,8 @@ import org.json.JSONObject
 import java.util.concurrent.TimeUnit
 
 class MainActivity : AppCompatActivity() {
-    private val demoApiBase = "https://syrtcapi.shengyuchenyao.cn/demo-api"
-    private val demoSignalingUrl = "wss://syrtcapi.shengyuchenyao.cn/ws/signaling"
+    private val demoApiBase = "http://47.105.48.196/demo-api"
+    private val demoSignalingUrl = "ws://47.105.48.196/ws/signaling"
     private val demoAppId = "APP1769003318261114285E3"
     private val demoAppSecret = "524d401de4c34ad1b554f2b35fe74d6f4f8f7e55614146069b527c1f8799b488"
     private lateinit var engine: RtcEngine
