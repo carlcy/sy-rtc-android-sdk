@@ -90,6 +90,9 @@ class RoomService(
     @Volatile
     private var appSecret: String? = null
 
+    @Volatile
+    private var userId: String? = null
+
     private val executor: ExecutorService = Executors.newSingleThreadExecutor()
     private val mainHandler = Handler(Looper.getMainLooper())
 
@@ -111,6 +114,13 @@ class RoomService(
         appSecret = secret
     }
 
+    /**
+     * 设置用户 ID（用于房间创建、上下麦等需要身份的操作）
+     */
+    fun setUserId(uid: String) {
+        userId = uid
+    }
+
     private fun buildHeaders(): Map<String, String> {
         val headers = mutableMapOf<String, String>(
             "X-App-Id" to appId,
@@ -121,6 +131,9 @@ class RoomService(
         }
         appSecret?.takeIf { it.isNotEmpty() }?.let {
             headers["X-App-Secret"] = it
+        }
+        userId?.takeIf { it.isNotEmpty() }?.let {
+            headers["X-Uid"] = it
         }
         return headers
     }

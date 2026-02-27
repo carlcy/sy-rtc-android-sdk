@@ -1,5 +1,17 @@
 # SY RTC Android SDK 更新日志
 
+## 2.1.1
+
+### 新增功能
+
+- `RtcEngine.setChannelProfile(profile)` — 设置频道场景（通信/直播）
+- `RtcEngine.enableAudioVolumeIndication(interval, smooth, reportVad)` — 启用音量提示回调
+- `RoomService.setUserId(uid)` — 设置用户 ID 用于房间创建等需要身份认证的操作
+
+### Bug 修复
+
+- 统一所有版本号为 2.1.1
+
 ## 2.1.0
 
 ### 新增 RoomService — 房间管理服务

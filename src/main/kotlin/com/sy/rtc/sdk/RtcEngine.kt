@@ -138,6 +138,28 @@ class RtcEngine private constructor() {
     }
 
     /**
+     * 设置频道场景
+     *
+     * 必须在 [join] 之前调用。
+     * @param profile 场景："communication"（通信）或 "liveBroadcasting"（直播）
+     */
+    fun setChannelProfile(profile: String) {
+        impl?.setChannelProfile(profile)
+    }
+
+    /**
+     * 启用用户音量提示
+     *
+     * 启用后，SDK 会按设定间隔触发 [RtcEventHandler.onVolumeIndication] 回调。
+     * @param interval 回调间隔（毫秒），建议 200ms。设为 0 禁用。
+     * @param smooth 平滑系数，建议 3
+     * @param reportVad 是否报告本地用户的人声检测，默认 false
+     */
+    fun enableAudioVolumeIndication(interval: Int = 200, smooth: Int = 3, reportVad: Boolean = false) {
+        impl?.enableAudioVolumeIndication(interval, smooth, reportVad)
+    }
+
+    /**
      * 设置事件处理器
      * 
      * @param handler 事件处理器

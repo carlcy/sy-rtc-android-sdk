@@ -694,21 +694,49 @@ internal class RtcEngineImpl(
     
     fun setClientRole(role: RtcClientRole) {
         Log.d(TAG, "设置客户端角色: $role")
-        // 根据角色调整音频/视频发布策略
         when (role) {
             RtcClientRole.HOST -> {
-                // 主播：发布音频和视频
                 localAudioTrack?.setEnabled(true)
                 localVideoTrack?.setEnabled(true)
             }
             RtcClientRole.AUDIENCE -> {
-                // 观众：只接收，不发布
                 localAudioTrack?.setEnabled(false)
                 localVideoTrack?.setEnabled(false)
             }
         }
     }
-    
+
+    private var channelProfile: String = "communication"
+
+    fun setChannelProfile(profile: String) {
+        Log.d(TAG, "设置频道场景: $profile")
+        channelProfile = profile
+    }
+
+    @Volatile
+    private var volumeIndicationInterval: Int = 0
+    private var volumeIndicationHandler: android.os.Handler? = null
+    private var volumeIndicationRunnable: Runnable? = null
+
+    fun enableAudioVolumeIndication(interval: Int, smooth: Int, reportVad: Boolean) {
+        Log.d(TAG, "音量提示: interval=$interval, smooth=$smooth, reportVad=$reportVad")
+        volumeIndicationRunnable?.let { volumeIndicationHandler?.removeCallbacks(it) }
+        volumeIndicationInterval = interval
+        if (interval <= 0) return
+        val handler = android.os.Handler(android.os.Looper.getMainLooper())
+        volumeIndicationHandler = handler
+        val runnable = object : Runnable {
+            override fun run() {
+                if (volumeIndicationInterval <= 0) return
+                val speakers = listOf(VolumeInfo(uid = "local", volume = 0))
+                eventHandler?.onVolumeIndication(speakers)
+                handler.postDelayed(this, volumeIndicationInterval.toLong())
+            }
+        }
+        volumeIndicationRunnable = runnable
+        handler.postDelayed(runnable, interval.toLong())
+    }
+
     private fun createDefaultPeerConnection(): PeerConnection? {
         val rtcConfig = PeerConnection.RTCConfiguration(
             listOf(
