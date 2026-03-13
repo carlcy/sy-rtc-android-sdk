@@ -5,14 +5,14 @@ plugins {
 
 android {
     namespace 'com.sy.rtc.example'
-    compileSdk 34
+    compileSdk 35
 
     defaultConfig {
         applicationId "com.sy.rtc.example"
         minSdk 24
         targetSdk 34
         versionCode 1
-        versionName "2.1.1"
+        versionName "3.0.0"
     }
 
     buildTypes {

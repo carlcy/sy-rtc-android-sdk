@@ -29,11 +29,11 @@ allprojects {
 
 ```gradle
 dependencies {
-    implementation 'com.github.carlcy:sy-rtc-android-sdk:v2.1.1'
+    implementation 'com.github.carlcy:sy-rtc-android-sdk:v3.0.0'
 }
 ```
 
-**注意**：将 `carlcy` 替换为你的 GitHub 用户名，`v2.1.1` 替换为实际的版本号。
+**注意**：将 `carlcy` 替换为你的 GitHub 用户名，`v3.0.0` 替换为实际的版本号。
 
 ### 方式二：从 Maven Central 安装
 
@@ -45,7 +45,7 @@ repositories {
 }
 
 dependencies {
-    implementation 'com.sy.rtc:sy-rtc-android-sdk:2.1.1'
+    implementation 'com.sy.rtc:sy-rtc-android-sdk:3.0.0'
 }
 ```
 
@@ -510,14 +510,14 @@ if (ContextCompat.checkSelfPermission(
 1. **推送到 GitHub**
    ```bash
    git add .
-   git commit -m "Release v2.1.1"
+   git commit -m "Release v3.0.0"
    git push origin main
    ```
 
 2. **创建 Release Tag**
    ```bash
-   git tag v2.1.1
-   git push origin v2.1.1
+   git tag v3.0.0
+   git push origin v3.0.0
    ```
 
 3. **访问 JitPack**
@@ -535,7 +535,7 @@ repositories {
 }
 
 dependencies {
-    implementation 'com.github.carlcy:sy-rtc-android-sdk:v2.1.1'
+    implementation 'com.github.carlcy:sy-rtc-android-sdk:v3.0.0'
 }
 ```
 

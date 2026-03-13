@@ -1,5 +1,17 @@
 # SY RTC Android SDK 更新日志
 
+## 3.0.0
+
+### 重大变更
+
+- **适配 Flutter 3.38+ / Kotlin 2.0**：升级 Kotlin 至 2.0.21、AGP 至 8.7.3、Gradle 至 8.9
+- compileSdk 从 34 升至 35
+- 添加 `jitpack.yml` 确保 JitPack 使用 JDK 17 构建
+
+### 兼容性说明
+
+- 搭配 Flutter SDK `3.0.0` 使用；旧项目可继续使用 `2.1.1`
+
 ## 2.1.1
 
 ### 新增功能

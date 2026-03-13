@@ -10,7 +10,7 @@ plugins {
 
 android {
     namespace 'com.sy.rtc.sdk'
-    compileSdk 34
+    compileSdk 35
 
     defaultConfig {
         minSdk 21
@@ -87,7 +87,7 @@ afterEvaluate {
                 
                 groupId = 'com.sy.rtc'
                 artifactId = 'sy-rtc-android-sdk'
-                version = '2.1.1'
+                version = '3.0.0'
                 
                 pom {
                     name = 'SY RTC Android SDK'
