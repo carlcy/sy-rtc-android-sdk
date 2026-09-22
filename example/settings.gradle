@@ -4,17 +4,29 @@ pluginManagement {
         mavenCentral()
         gradlePluginPortal()
     }
+    plugins {
+        id 'com.android.application' version '8.7.3'
+        id 'com.android.library' version '8.7.3'
+        id 'org.jetbrains.kotlin.android' version '2.0.21'
+    }
 }
 
 dependencyResolutionManagement {
-    repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
+    // PREFER_SETTINGS：允许 SDK 模块自身 repositories 块存在而不失败
+    repositoriesMode.set(RepositoriesMode.PREFER_SETTINGS)
     repositories {
         google()
         mavenCentral()
         maven { url 'https://jitpack.io' }
-        flatDir { dirs new File(rootDir, '../build/outputs/aar').absolutePath }
+        flatDir {
+            dirs new File(rootDir, 'libs').absolutePath
+            dirs new File(rootDir, '../build/outputs/aar').absolutePath
+        }
     }
 }
 
 rootProject.name = "SyRtcSDKExample"
 include ':app'
+// 源码联调：直接依赖上级 Android Library，避免陈旧 AAR
+include ':sy-rtc-android-sdk'
+project(':sy-rtc-android-sdk').projectDir = new File(settingsDir, '..')

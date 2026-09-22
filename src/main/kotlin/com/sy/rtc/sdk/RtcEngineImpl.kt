@@ -102,9 +102,6 @@ internal class RtcEngineImpl(
     // 数据流
     private val dataStreams = ConcurrentHashMap<Int, Boolean>()
     
-    // 旁路推流
-    private val rtmpStreams = ConcurrentHashMap<String, LiveTranscoding>()
-    // RTMP 推流采用“服务端旁路 egress”方案：SDK 调用后端 /api/rtc/live/* 控制接口（业内常见）
     private var apiBaseUrl: String? = null
     
     // 屏幕共享
@@ -124,6 +121,8 @@ internal class RtcEngineImpl(
     private val remoteVideoTracks = ConcurrentHashMap<String, org.webrtc.VideoTrack>()
     // 远端视频渲染器（便于 release 时移除）
     private val remoteRenderers = ConcurrentHashMap<String, org.webrtc.SurfaceViewRenderer>()
+    private val pendingRemoteContainers = ConcurrentHashMap<String, java.lang.ref.WeakReference<android.view.ViewGroup>>()
+    private var localRenderer: org.webrtc.SurfaceViewRenderer? = null
     private var eglBase: EglBase? = null
     
     // 频道状态
@@ -132,7 +131,7 @@ internal class RtcEngineImpl(
     private var joinStartTime: Long = 0
     // join 传入 token：RTC Token（用于加入频道）
     private var currentToken: String? = null
-    // 后端 API 认证用的 JWT（用于 /api/rtc/live/* 等）
+    // 后端 API 认证用的 JWT
     private var apiAuthToken: String? = null
     private var isJoined = AtomicBoolean(false)
     
@@ -168,79 +167,6 @@ internal class RtcEngineImpl(
         apiAuthToken = token
     }
 
-    private fun postLiveApi(path: String, body: JSONObject) {
-        val base = apiBaseUrl
-        val token = apiAuthToken ?: currentToken
-        if (base.isNullOrEmpty()) {
-            eventHandler?.onError(1001, "API_BASE_URL 未设置：请先调用 setApiBaseUrl() 或在 Flutter init 里传 apiBaseUrl")
-            return
-        }
-        if (token.isNullOrEmpty()) {
-            eventHandler?.onError(1001, "缺少登录 token：请先调用 setApiAuthToken() 或在 join() 后设置")
-            return
-        }
-        try {
-            val url = URL("$base$path")
-            val conn = (url.openConnection() as HttpURLConnection).apply {
-                requestMethod = "POST"
-                connectTimeout = 8000
-                readTimeout = 8000
-                doOutput = true
-                setRequestProperty("Content-Type", "application/json")
-                setRequestProperty("Authorization", "Bearer $token")
-                setRequestProperty("X-App-Id", appId)
-                // 后端 live 接口需要 uid，否则返回 401
-                currentUid?.takeIf { it.isNotEmpty() }?.let { setRequestProperty("X-Uid", it) }
-            }
-            conn.outputStream.use { os ->
-                os.write(body.toString().toByteArray(Charsets.UTF_8))
-            }
-            val code = conn.responseCode
-            val resp = try {
-                val s = if (code in 200..299) conn.inputStream else conn.errorStream
-                s?.bufferedReader()?.use { it.readText() } ?: ""
-            } catch (_: Exception) {
-                ""
-            }
-            if (code !in 200..299) {
-                eventHandler?.onError(1001, "直播接口失败: $code $resp")
-            }
-            conn.disconnect()
-        } catch (e: Exception) {
-            eventHandler?.onError(1001, "直播接口异常: ${e.message}")
-        }
-    }
-
-    private fun guessLayoutFromTranscoding(transcoding: LiveTranscoding): JSONObject {
-        val users = transcoding.transcodingUsers
-        if (users.isNullOrEmpty()) {
-            return JSONObject().apply {
-                put("mode", "host-main")
-                put("hostUid", currentUid ?: "")
-                put("side", "right")
-            }
-        }
-        val sorted = users.sortedByDescending { it.width * it.height }
-        val top1 = sorted.getOrNull(0)
-        val top2 = sorted.getOrNull(1)
-        if (top1 != null && top2 != null) {
-            val a1 = top1.width * top1.height
-            val a2 = top2.width * top2.height
-            val ratio = if (a2 <= 0.0) 999.0 else a1 / a2
-            if (ratio < 1.2) {
-                return JSONObject().apply {
-                    put("mode", "pk")
-                    put("pkUids", org.json.JSONArray(listOf(top1.uid, top2.uid)))
-                }
-            }
-        }
-        val host = top1?.uid ?: (currentUid ?: "")
-        return JSONObject().apply {
-            put("mode", "host-main")
-            put("hostUid", host)
-            put("side", "right")
-        }
-    }
 
     // ==================== 网络质量（简化实现） ====================
 
@@ -347,7 +273,7 @@ internal class RtcEngineImpl(
         try {
             // 连接信令服务器
             signalingClient = SignalingClient(
-                signalingUrl, channelId, uid,
+                signalingUrl, channelId, uid, token,
                 onMessage = { type, data -> handleSignalingMessage(type, data, channelId) },
                 onConnectionFailure = {
                 eventHandler?.onConnectionStateChanged("failed", "connection_failed")
@@ -355,6 +281,7 @@ internal class RtcEngineImpl(
             }
             )
             signalingClient?.connect()
+            startMemberStatePoll(channelId, uid)
             
             // 创建音频轨道
             val audioSource = peerConnectionFactory?.createAudioSource(org.webrtc.MediaConstraints())
@@ -374,6 +301,7 @@ internal class RtcEngineImpl(
         Log.d(TAG, "离开频道: channelId=$currentChannelId")
         
         try {
+            stopMemberStatePoll()
             // 断开信令连接
             signalingClient?.disconnect()
             signalingClient = null
@@ -423,6 +351,34 @@ internal class RtcEngineImpl(
         Log.d(TAG, "处理信令消息: type=$type")
         
         when (type) {
+            "kicked" -> {
+                val reason = (data["reason"] as? String) ?: "kicked"
+                Log.w(TAG, "被踢出频道: $reason")
+                eventHandler?.onKicked(channelId, reason)
+                eventHandler?.onError(1004, "kicked: $reason")
+                leave()
+            }
+            "user-kicked" -> {
+                val kickedUid = (data["uid"] as? String) ?: return
+                if (kickedUid == currentUid) {
+                    val reason = (data["reason"] as? String) ?: "user-kicked"
+                    eventHandler?.onKicked(channelId, reason)
+                    leave()
+                } else {
+                    eventHandler?.onUserOffline(kickedUid, "kicked")
+                    peerConnections.remove(kickedUid)?.close()
+                }
+            }
+            "mute-audio", "unmute-audio" -> {
+                val target = (data["uid"] as? String) ?: return
+                val muted = type == "mute-audio" || (data["mutedAudio"] as? Boolean) == true
+                eventHandler?.onServerMuteAudio(target, muted)
+                if (target == currentUid) {
+                    localAudioTrack?.setEnabled(!muted)
+                } else {
+                    muteRemoteAudioStream(target, muted)
+                }
+            }
             "user-list" -> {
                 // 信令确认加入成功，触发 onJoinChannelSuccess
                 val elapsed = (System.currentTimeMillis() - joinStartTime).toInt().coerceAtLeast(0)
@@ -623,9 +579,12 @@ internal class RtcEngineImpl(
                         val videoTrack = track as org.webrtc.VideoTrack
                         remoteVideoTracks[remoteUid] = videoTrack
                         videoMutedStates[remoteUid]?.let { muted -> videoTrack.setEnabled(!muted) }
+                        val container = pendingRemoteContainers[remoteUid]?.get()
                         val viewId = videoViews[remoteUid]
-                        if (viewId != null) {
-                            android.os.Handler(android.os.Looper.getMainLooper()).post {
+                        android.os.Handler(android.os.Looper.getMainLooper()).post {
+                            if (container != null) {
+                                bindRemoteVideoToContainer(remoteUid, videoTrack, container)
+                            } else if (viewId != null) {
                                 bindRemoteVideoToView(remoteUid, videoTrack, viewId)
                             }
                         }
@@ -692,18 +651,14 @@ internal class RtcEngineImpl(
         list.forEach { pc.addIceCandidate(it) }
     }
     
+    private var clientRole: RtcClientRole = RtcClientRole.HOST
+
     fun setClientRole(role: RtcClientRole) {
-        Log.d(TAG, "设置客户端角色: $role")
-        when (role) {
-            RtcClientRole.HOST -> {
-                localAudioTrack?.setEnabled(true)
-                localVideoTrack?.setEnabled(true)
-            }
-            RtcClientRole.AUDIENCE -> {
-                localAudioTrack?.setEnabled(false)
-                localVideoTrack?.setEnabled(false)
-            }
-        }
+        Log.d(TAG, "设置客户端角色: $role canPublish=${role.canPublish()}")
+        clientRole = role
+        val publish = role.canPublish()
+        localAudioTrack?.setEnabled(publish)
+        localVideoTrack?.setEnabled(publish)
     }
 
     private var channelProfile: String = "communication"
@@ -1347,6 +1302,9 @@ internal class RtcEngineImpl(
                     )
                     
                     localVideoTrack = peerConnectionFactory?.createVideoTrack("video_track", videoSource)
+                    android.os.Handler(android.os.Looper.getMainLooper()).post {
+                        bindLocalVideoToView(viewId)
+                    }
                     Log.d(TAG, "摄像头预览已启动到视图: $viewId")
                 } else {
                     Log.w(TAG, "未检测到可用摄像头，无法启动预览")
@@ -1412,11 +1370,53 @@ internal class RtcEngineImpl(
     fun setupLocalVideo(viewId: Int) {
         videoViews["local"] = viewId
         Log.d(TAG, "设置本地视频视图: $viewId")
-        
-        // 如果预览已在进行，立即绑定视图
-        if (isPreviewing.get()) {
-            // cameraManager.bindView(viewId)
-            Log.d(TAG, "本地视频视图已绑定")
+        android.os.Handler(android.os.Looper.getMainLooper()).post {
+            bindLocalVideoToView(viewId)
+        }
+    }
+
+    /** 将本地预览绑定到 Activity 中 id=viewId 的 ViewGroup（如 FrameLayout）。 */
+    private fun bindLocalVideoToView(viewId: Int) {
+        try {
+            val activity = context as? android.app.Activity ?: return
+            val container = activity.findViewById<android.view.ViewGroup>(viewId) ?: return
+            bindLocalVideoToContainer(container)
+            Log.d(TAG, "本地视频已绑定到视图: $viewId")
+        } catch (e: Exception) {
+            Log.e(TAG, "绑定本地视频视图失败", e)
+        }
+    }
+
+    fun setupLocalVideo(container: android.view.ViewGroup) {
+        videoViews["local"] = container.id
+        Log.d(TAG, "设置本地视频 ViewGroup")
+        android.os.Handler(android.os.Looper.getMainLooper()).post {
+            bindLocalVideoToContainer(container)
+        }
+    }
+
+    private fun bindLocalVideoToContainer(container: android.view.ViewGroup) {
+        try {
+            localRenderer?.let { old ->
+                try { localVideoTrack?.removeSink(old) } catch (_: Exception) {}
+                try { old.release() } catch (_: Exception) {}
+                try { (old.parent as? android.view.ViewGroup)?.removeView(old) } catch (_: Exception) {}
+            }
+            val renderer = org.webrtc.SurfaceViewRenderer(container.context)
+            renderer.init(eglBase?.eglBaseContext, null)
+            renderer.setMirror(true)
+            renderer.setEnableHardwareScaler(true)
+            container.removeAllViews()
+            container.addView(
+                renderer,
+                android.view.ViewGroup.LayoutParams.MATCH_PARENT,
+                android.view.ViewGroup.LayoutParams.MATCH_PARENT
+            )
+            localRenderer = renderer
+            localVideoTrack?.addSink(renderer)
+            Log.d(TAG, "本地视频已绑定到 ViewGroup")
+        } catch (e: Exception) {
+            Log.e(TAG, "绑定本地视频 ViewGroup 失败", e)
         }
     }
     
@@ -1424,20 +1424,30 @@ internal class RtcEngineImpl(
         try {
             val activity = context as? android.app.Activity ?: return
             val container = activity.findViewById<android.view.ViewGroup>(viewId) ?: return
+            bindRemoteVideoToContainer(uid, remoteTrack, container)
+        } catch (e: Exception) {
+            Log.e(TAG, "绑定远端视频视图失败", e)
+        }
+    }
+
+    private fun bindRemoteVideoToContainer(uid: String, remoteTrack: org.webrtc.VideoTrack, container: android.view.ViewGroup) {
+        try {
             remoteRenderers[uid]?.let { old ->
-                old.release()
-                container.removeView(old)
+                try { remoteTrack.removeSink(old) } catch (_: Exception) {}
+                try { old.release() } catch (_: Exception) {}
+                try { (old.parent as? android.view.ViewGroup)?.removeView(old) } catch (_: Exception) {}
             }
-            val renderer = org.webrtc.SurfaceViewRenderer(context)
+            val renderer = org.webrtc.SurfaceViewRenderer(container.context)
             renderer.init(eglBase?.eglBaseContext, null)
             renderer.setZOrderMediaOverlay(true)
             remoteTrack.addSink(renderer)
             videoMutedStates[uid]?.let { muted -> remoteTrack.setEnabled(!muted) }
+            container.removeAllViews()
             container.addView(renderer, android.view.ViewGroup.LayoutParams.MATCH_PARENT, android.view.ViewGroup.LayoutParams.MATCH_PARENT)
             remoteRenderers[uid] = renderer
-            Log.d(TAG, "远端视频已绑定到视图: uid=$uid")
+            Log.d(TAG, "远端视频已绑定到 ViewGroup: uid=$uid")
         } catch (e: Exception) {
-            Log.e(TAG, "绑定远端视频视图失败", e)
+            Log.e(TAG, "绑定远端视频 ViewGroup 失败", e)
         }
     }
     
@@ -1451,6 +1461,21 @@ internal class RtcEngineImpl(
             }
         } else {
             Log.d(TAG, "远端轨道尚未到达，将在 onAddTrack 时自动绑定: uid=$uid")
+        }
+    }
+
+    fun setupRemoteVideo(uid: String, container: android.view.ViewGroup) {
+        videoViews[uid] = container.id
+        Log.d(TAG, "设置远端视频 ViewGroup: uid=$uid")
+        val remoteTrack = remoteVideoTracks[uid]
+        // remember container for late bind
+        pendingRemoteContainers[uid] = java.lang.ref.WeakReference(container)
+        if (remoteTrack != null) {
+            android.os.Handler(android.os.Looper.getMainLooper()).post {
+                bindRemoteVideoToContainer(uid, remoteTrack, container)
+            }
+        } else {
+            Log.d(TAG, "远端轨道尚未到达，将在 onAddTrack 时自动绑定 ViewGroup: uid=$uid")
         }
     }
     
@@ -2068,69 +2093,6 @@ internal class RtcEngineImpl(
         }
     }
     
-    // ==================== 旁路推流 ====================
-    
-    fun startRtmpStreamWithTranscoding(url: String, transcoding: LiveTranscoding) {
-        val channelId = currentChannelId
-        if (channelId.isNullOrBlank()) {
-            eventHandler?.onError(1001, "未加入频道，无法开播")
-            return
-        }
-        val publishers = transcoding.transcodingUsers
-            ?.mapNotNull { it.uid?.takeIf { s -> s.isNotBlank() } }
-            ?.distinct()
-            ?.takeIf { it.isNotEmpty() }
-            ?: listOfNotNull(currentUid).filter { it.isNotBlank() }
-
-        // 如果url为空，使用空数组，后端会自动生成我们服务器的RTMP地址
-        val rtmpUrls = if (url.isBlank()) emptyList<String>() else listOf(url)
-
-        val body = JSONObject().apply {
-            put("channelId", channelId)
-            put("publishers", org.json.JSONArray(publishers))
-            put("rtmpUrls", org.json.JSONArray(rtmpUrls))
-            put("video", JSONObject().apply {
-                put("outW", transcoding.width)
-                put("outH", transcoding.height)
-                put("fps", transcoding.videoFramerate)
-                put("bitrateKbps", transcoding.videoBitrate)
-            })
-            put("audio", JSONObject().apply {
-                put("sampleRate", 48000)
-                put("channels", 2)
-                put("bitrateKbps", 128)
-            })
-            put("layout", guessLayoutFromTranscoding(transcoding))
-        }
-        postLiveApi("/api/rtc/live/start", body)
-        
-        // 如果url为空，使用生成的地址（从响应中获取，或使用默认格式）
-        val finalUrl = if (url.isBlank()) "auto_generated_$channelId" else url
-        rtmpStreams[finalUrl] = transcoding
-    }
-    
-    fun stopRtmpStream(url: String) {
-        if (url.isBlank()) return
-        val channelId = currentChannelId ?: return
-        val body = JSONObject().apply { put("channelId", channelId) }
-        postLiveApi("/api/rtc/live/stop", body)
-        rtmpStreams.remove(url)
-    }
-    
-    fun updateRtmpTranscoding(transcoding: LiveTranscoding) {
-        val channelId = currentChannelId ?: return
-        val body = JSONObject().apply {
-            put("channelId", channelId)
-            put("video", JSONObject().apply {
-                put("outW", transcoding.width)
-                put("outH", transcoding.height)
-                put("fps", transcoding.videoFramerate)
-                put("bitrateKbps", transcoding.videoBitrate)
-            })
-            put("layout", guessLayoutFromTranscoding(transcoding))
-        }
-        postLiveApi("/api/rtc/live/update", body)
-    }
     
     // ==================== 清理 ====================
     
@@ -2168,11 +2130,6 @@ internal class RtcEngineImpl(
         eglBase?.release()
         eglBase = null
         
-        // 释放RTMP资源
-        rtmpStreams.keys.forEach { url ->
-            stopRtmpStream(url)
-        }
-        
         // 释放屏幕共享资源
         virtualDisplay?.release()
         screenCaptureSurface?.release()
@@ -2186,6 +2143,13 @@ internal class RtcEngineImpl(
         remoteVideoTracks.values.forEach { it.dispose() }
         remoteVideoTracks.clear()
         android.os.Handler(android.os.Looper.getMainLooper()).post {
+            try {
+                localRenderer?.let { r ->
+                    try { localVideoTrack?.removeSink(r) } catch (_: Exception) {}
+                    r.release()
+                }
+            } catch (_: Exception) {}
+            localRenderer = null
             remoteRenderers.values.forEach { it.release() }
             remoteRenderers.clear()
         }
@@ -2194,9 +2158,6 @@ internal class RtcEngineImpl(
         peerConnections.values.forEach { it.dispose() }
         peerConnections.clear()
         
-        // 停止所有旁路推流（先复制 keys 避免并发修改）
-        rtmpStreams.keys.toList().forEach { url -> stopRtmpStream(url) }
-        
         // 清理所有状态
         effects.clear()
         effectPlayers.clear()
@@ -2204,7 +2165,6 @@ internal class RtcEngineImpl(
         userVolumes.clear()
         videoMutedStates.clear()
         dataStreams.clear()
-        rtmpStreams.clear()
         
         Log.d(TAG, "所有资源已释放")
     }
@@ -2222,8 +2182,6 @@ internal class RtcEngineImpl(
         val txBitrate: Int,
         val rxBitrate: Int
     )
-    
-    // RTMP 推流改为走服务端 egress：不在客户端实现 RTMP 连接/编码，以降低复杂度并提高跨平台一致性。
     
     // 美颜滤镜类
     private class BeautyFilter {
@@ -2395,4 +2353,66 @@ internal class RtcEngineImpl(
             null
         }
     }
+
+    // ---- mute/kick state poll (fallback when signalingNotified=0) ----
+    private var memberPollHandler: android.os.Handler? = null
+    private var memberPollRunnable: Runnable? = null
+    private var roomServiceForPoll: RoomService? = null
+    private var pollChannelId: String? = null
+    private var pollUid: String? = null
+
+    private fun startMemberStatePoll(channelId: String, uid: String) {
+        stopMemberStatePoll()
+        val base = apiBaseUrl?.takeIf { it.isNotBlank() }
+        if (base == null || appId.isBlank()) {
+            Log.d(TAG, "skip member state poll: apiBaseUrl/appId unset")
+            return
+        }
+        pollChannelId = channelId
+        pollUid = uid
+        val svc = RoomService(base, appId).also {
+            apiAuthToken?.let { t -> it.setAuthToken(t) }
+            it.setUserId(uid)
+        }
+        roomServiceForPoll = svc
+        val handler = android.os.Handler(android.os.Looper.getMainLooper())
+        memberPollHandler = handler
+        val runnable = object : Runnable {
+            override fun run() {
+                val ch = pollChannelId ?: return
+                val u = pollUid ?: return
+                svc.getMemberState(ch, u) { state, err ->
+                    if (err != null || state == null) {
+                        memberPollHandler?.postDelayed(this, 5000)
+                        return@getMemberState
+                    }
+                    if (state.kicked) {
+                        eventHandler?.onKicked(ch, state.kickReason.ifBlank { "polled-kicked" })
+                        leave()
+                        return@getMemberState
+                    }
+                    if (state.mutedAudio) {
+                        localAudioTrack?.setEnabled(false)
+                        eventHandler?.onServerMuteAudio(u, true)
+                    }
+                    if (isJoined.get()) {
+                        memberPollHandler?.postDelayed(this, 5000)
+                    }
+                }
+            }
+        }
+        memberPollRunnable = runnable
+        handler.postDelayed(runnable, 3000)
+    }
+
+    private fun stopMemberStatePoll() {
+        memberPollRunnable?.let { memberPollHandler?.removeCallbacks(it) }
+        memberPollRunnable = null
+        memberPollHandler = null
+        roomServiceForPoll = null
+        pollChannelId = null
+        pollUid = null
+    }
+
+
 }

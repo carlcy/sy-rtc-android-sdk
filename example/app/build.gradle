@@ -10,25 +10,34 @@ android {
     defaultConfig {
         applicationId "com.sy.rtc.example"
         minSdk 24
-        targetSdk 34
+        targetSdk 35
         versionCode 1
-        versionName "3.0.0"
+        versionName "3.1.0"
     }
 
     buildTypes {
+        debug {
+            minifyEnabled false
+        }
         release {
             minifyEnabled false
             proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
         }
     }
-    
+
     compileOptions {
         sourceCompatibility JavaVersion.VERSION_17
         targetCompatibility JavaVersion.VERSION_17
     }
-    
+
     kotlinOptions {
         jvmTarget = '17'
+    }
+
+    packaging {
+        resources {
+            excludes += ['META-INF/DEPENDENCIES', 'META-INF/LICENSE*', 'META-INF/NOTICE*']
+        }
     }
 }
 
@@ -38,9 +47,9 @@ dependencies {
     implementation 'com.google.android.material:material:1.11.0'
     implementation 'androidx.constraintlayout:constraintlayout:2.1.4'
     implementation 'com.squareup.okhttp3:okhttp:4.12.0'
-    
-    implementation(name: 'sy-rtc-android-sdk-release', ext: 'aar')
+
+    // 源码模块（settings.gradle include）
+    implementation project(':sy-rtc-android-sdk')
+    // WebRTC 为 SDK implementation，对 app 非传递；示例显式依赖
     implementation 'io.github.webrtc-sdk:android:125.6422.07'
 }
-
-// repositories 已在 settings.gradle 的 dependencyResolutionManagement 中声明（FAIL_ON_PROJECT_REPOS）

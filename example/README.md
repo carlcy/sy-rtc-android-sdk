@@ -1,49 +1,20 @@
 # Android SDK Demo
 
-这是一个完整的 Android SDK 使用示例项目。
+## 生产基址（2026-09-15）
 
-## 📁 项目结构
+- API: `http://47.105.48.196`
+- 信令: `ws://47.105.48.196/ws/signaling`（RTC；须 `?token=`）
+- 文档: `docs/SDK_RTC.md` / `docs/SDK_IM.md`
+- 下载: `http://47.105.48.196/downloads/`
 
+本机调试仍可用 `10.0.2.2:8080`（Android 模拟器）或 `127.0.0.1`。
+
+
+对接 **rtc-backend-go :8080**。详细步骤见 **[README_EXAMPLE.md](./README_EXAMPLE.md)**。
+
+- 模拟器默认：`http://10.0.2.2:8080` / `ws://10.0.2.2:8080/ws/signaling`
+- 真机：换成电脑局域网 IP
+
+```bash
+cd example && ./gradlew :app:assembleDebug
 ```
-example/
-├── app/
-│   ├── src/
-│   │   └── main/
-│   │       ├── java/com/sy/rtc/example/
-│   │       │   └── MainActivity.kt
-│   │       └── res/
-│   └── build.gradle
-├── build.gradle
-└── settings.gradle
-```
-
-## 🚀 快速开始
-
-### 1. 配置依赖
-
-在 `app/build.gradle` 中添加：
-
-```gradle
-dependencies {
-    implementation 'com.sy.rtc:sy-rtc-android-sdk:1.2.0'
-}
-```
-
-### 2. 添加权限
-
-在 `AndroidManifest.xml` 中添加：
-
-```xml
-<uses-permission android:name="android.permission.INTERNET" />
-<uses-permission android:name="android.permission.RECORD_AUDIO" />
-<uses-permission android:name="android.permission.CAMERA" />
-<uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
-```
-
-### 3. 使用示例
-
-参考 `app/src/main/java/com/sy/rtc/example/MainActivity.kt`
-
-## 📝 完整示例代码
-
-详见 README.md 中的示例代码部分。

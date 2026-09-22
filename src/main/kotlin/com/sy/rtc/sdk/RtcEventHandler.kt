@@ -217,6 +217,17 @@ open class RtcEventHandler {
     open fun onStreamMessageError(uid: String, streamId: Int, code: Int, missed: Int, cached: Int) {}
 
     /**
+     * 被服务端踢出房间（信令 type=kicked，或 poll 发现 kicked=1）。
+     * 非 SFU 强制切断；SDK 会 leave 并回调。
+     */
+    open fun onKicked(channelId: String, reason: String) {}
+
+    /**
+     * 服务端静音/解静音本端或远端（信令 mute-audio/unmute-audio，或 poll）。
+     */
+    open fun onServerMuteAudio(uid: String, muted: Boolean) {}
+
+    /**
      * 频道消息回调
      *
      * @param uid 发送方用户ID

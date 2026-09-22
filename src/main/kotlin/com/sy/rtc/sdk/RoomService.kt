@@ -298,27 +298,32 @@ class RoomService(
     }
 
     /**
-     * 获取 RTC Token
+     * 获取 RTC Token（别名 [getToken]）。
      *
-     * 用于 [RtcEngine.join] 加入房间时所需的 RTC Token。
+     * 用于 [RtcEngine.join]；信令 WS 须带 ?token=。
      *
-     * @param channelId 要加入的房间 ID
-     * @param uid 用户 ID
-     * @param expireHours 过期时间（小时），默认 24
-     * @param callback 回调 (Token 字符串, 异常)，成功时 token 非 null
+     * @param role host|audience|publisher|subscriber（写入 Token privilege）
+     * @param qualityTier audio|sd|hd|fhd
+     * @param meta true 时返回 JSON 字符串含 token+canPublish（一般用 false 拿纯 token）
      */
     fun fetchToken(
         channelId: String,
         uid: String,
         expireHours: Int = 24,
+        role: String? = null,
+        qualityTier: String? = null,
+        meta: Boolean = false,
         callback: (String?, Exception?) -> Unit
     ) {
         runOnBackground({
-            val queryParams = mapOf(
+            val queryParams = mutableMapOf(
                 "channelId" to channelId,
                 "uid" to uid,
                 "expireHours" to expireHours.toString()
             )
+            role?.takeIf { it.isNotBlank() }?.let { queryParams["role"] = it }
+            qualityTier?.takeIf { it.isNotBlank() }?.let { queryParams["qualityTier"] = it }
+            if (meta) queryParams["meta"] = "true"
             val (_, respBody) = executeRequest("POST", "/api/rtc/token", queryParams = queryParams)
             val json = JSONObject(respBody)
             val respCode = json.optInt("code", -1)
@@ -328,9 +333,89 @@ class RoomService(
             val data = json.opt("data")
             when (data) {
                 is String -> data
+                is JSONObject -> if (meta) data.toString() else data.optString("token").ifBlank { data.toString() }
                 null -> throw Exception("Token 响应格式错误")
                 else -> data.toString()
             }
         }, callback)
+    }
+
+    /** [fetchToken] 别名，便于与文档 getToken 对齐。 */
+    fun getToken(
+        channelId: String,
+        uid: String,
+        expireHours: Int = 24,
+        role: String? = null,
+        qualityTier: String? = null,
+        meta: Boolean = false,
+        callback: (String?, Exception?) -> Unit
+    ) = fetchToken(channelId, uid, expireHours, role, qualityTier, meta, callback)
+
+    /**
+     * 轮询单成员踢人/静音状态：GET /api/room/{channelId}/members/{uid}/state
+     * 信令未在线时服务端 note 要求 SDK poll。
+     */
+    fun getMemberState(
+        channelId: String,
+        uid: String,
+        callback: (MemberModerationState?, Exception?) -> Unit
+    ) {
+        runOnBackground({
+            val (_, respBody) = executeRequest("GET", "/api/room/$channelId/members/$uid/state")
+            val json = JSONObject(respBody)
+            if (json.optInt("code", -1) != 0) {
+                throw Exception(json.optString("msg", "获取成员状态失败"))
+            }
+            val data = json.optJSONObject("data") ?: JSONObject()
+            MemberModerationState.fromJson(data)
+        }, callback)
+    }
+
+    /** 房间内全部成员 kick/mute 标志：GET /api/room/{channelId}/members/state */
+    fun listMemberStates(
+        channelId: String,
+        callback: (List<MemberModerationState>?, Exception?) -> Unit
+    ) {
+        runOnBackground({
+            val (_, respBody) = executeRequest("GET", "/api/room/$channelId/members/state")
+            val json = JSONObject(respBody)
+            if (json.optInt("code", -1) != 0) {
+                throw Exception(json.optString("msg", "获取成员状态列表失败"))
+            }
+            val data = json.optJSONObject("data")
+            val arr = data?.optJSONArray("list")
+            val out = mutableListOf<MemberModerationState>()
+            if (arr != null) {
+                for (i in 0 until arr.length()) {
+                    arr.optJSONObject(i)?.let { out.add(MemberModerationState.fromJson(it)) }
+                }
+            }
+            out
+        }, callback)
+    }
+}
+
+/**
+ * 房间成员 moderation 状态（控制面持久化；非 SFU 强制切断）。
+ */
+data class MemberModerationState(
+    val appId: String,
+    val channelId: String,
+    val uid: String,
+    val mutedAudio: Boolean,
+    val kicked: Boolean,
+    val kickReason: String,
+    val signalingNotified: Boolean,
+) {
+    companion object {
+        fun fromJson(json: JSONObject): MemberModerationState = MemberModerationState(
+            appId = json.optString("appId"),
+            channelId = json.optString("channelId"),
+            uid = json.optString("uid"),
+            mutedAudio = json.optInt("mutedAudio", 0) == 1 || json.optBoolean("mutedAudio", false),
+            kicked = json.optInt("kicked", 0) == 1 || json.optBoolean("kicked", false),
+            kickReason = json.optString("kickReason"),
+            signalingNotified = json.optInt("signalingNotified", 0) == 1,
+        )
     }
 }

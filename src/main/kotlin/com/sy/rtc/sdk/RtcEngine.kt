@@ -63,7 +63,7 @@ class RtcEngine private constructor() {
     }
 
     /**
-     * 设置后端 API Base URL（用于直播旁路：开播/关播/切布局/更新转码等）
+     * 设置后端 API Base URL（用于业务接口鉴权等）
      *
      * 示例：
      * - http://47.105.48.196
@@ -76,7 +76,7 @@ class RtcEngine private constructor() {
     /**
      * 设置后端 API 认证 Token（JWT）
      *
-     * 用于调用 /api/rtc/live/ 等需要登录认证的接口。
+     * 用于调用需要登录认证的后端业务接口。
      * 注意：join() 里的 token 是 RTC Token，与该 JWT 不同。
      */
     fun setApiAuthToken(token: String) {
@@ -454,10 +454,24 @@ class RtcEngine private constructor() {
     }
 
     /**
+     * 设置本地视频视图（直接绑定 ViewGroup，供 Flutter PlatformView 使用）
+     */
+    fun setupLocalVideo(container: android.view.ViewGroup) {
+        impl?.setupLocalVideo(container)
+    }
+
+    /**
      * 设置远端视频视图
      */
     fun setupRemoteVideo(uid: String, viewId: Int) {
         impl?.setupRemoteVideo(uid, viewId)
+    }
+
+    /**
+     * 设置远端视频视图（直接绑定 ViewGroup，供 Flutter PlatformView 使用）
+     */
+    fun setupRemoteVideo(uid: String, container: android.view.ViewGroup) {
+        impl?.setupRemoteVideo(uid, container)
     }
 
     // ==================== 屏幕共享 ====================
@@ -627,26 +641,4 @@ class RtcEngine private constructor() {
         impl?.sendStreamMessage(streamId, data)
     }
 
-    // ==================== 旁路推流 ====================
-
-    /**
-     * 开始旁路推流
-     */
-    fun startRtmpStreamWithTranscoding(url: String, transcoding: LiveTranscoding) {
-        impl?.startRtmpStreamWithTranscoding(url, transcoding)
-    }
-
-    /**
-     * 停止旁路推流
-     */
-    fun stopRtmpStream(url: String) {
-        impl?.stopRtmpStream(url)
-    }
-
-    /**
-     * 更新旁路推流转码配置
-     */
-    fun updateRtmpTranscoding(transcoding: LiveTranscoding) {
-        impl?.updateRtmpTranscoding(transcoding)
-    }
 }

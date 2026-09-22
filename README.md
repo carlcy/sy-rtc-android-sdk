@@ -29,11 +29,11 @@ allprojects {
 
 ```gradle
 dependencies {
-    implementation 'com.github.carlcy:sy-rtc-android-sdk:v3.0.0'
+    implementation 'com.github.carlcy:sy-rtc-android-sdk:v3.1.0'
 }
 ```
 
-**注意**：将 `carlcy` 替换为你的 GitHub 用户名，`v3.0.0` 替换为实际的版本号。
+**注意**：将 `carlcy` 替换为你的 GitHub 用户名，`v3.1.0` 替换为实际的版本号。
 
 ### 方式二：从 Maven Central 安装
 
@@ -45,7 +45,7 @@ repositories {
 }
 
 dependencies {
-    implementation 'com.sy.rtc:sy-rtc-android-sdk:3.0.0'
+    implementation 'com.sy.rtc:sy-rtc-android-sdk:3.1.0'
 }
 ```
 
@@ -131,10 +131,10 @@ val token = getTokenFromServer(appId, channelId, uid)
 engine.join(channelId, uid, token)
 ```
 
-### 4.1 设置后端 API 认证 Token（用于直播等接口）
+### 4.1 设置后端 API 认证 Token
 
 ```kotlin
-// 用于调用 /api/rtc/live/* 等需要登录认证的接口
+// 用于调用需要登录认证的后端业务接口（与 join 的 RTC Token 不同）
 engine.setApiAuthToken(jwt)
 ```
 
@@ -510,14 +510,14 @@ if (ContextCompat.checkSelfPermission(
 1. **推送到 GitHub**
    ```bash
    git add .
-   git commit -m "Release v3.0.0"
+   git commit -m "Release v3.1.0"
    git push origin main
    ```
 
 2. **创建 Release Tag**
    ```bash
-   git tag v3.0.0
-   git push origin v3.0.0
+   git tag v3.1.0
+   git push origin v3.1.0
    ```
 
 3. **访问 JitPack**
@@ -535,7 +535,7 @@ repositories {
 }
 
 dependencies {
-    implementation 'com.github.carlcy:sy-rtc-android-sdk:v3.0.0'
+    implementation 'com.github.carlcy:sy-rtc-android-sdk:v3.1.0'
 }
 ```
 

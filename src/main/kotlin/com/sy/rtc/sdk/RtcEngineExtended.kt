@@ -86,30 +86,3 @@ data class AudioRecordingConfiguration(
     val quality: String = "medium"
 )
 
-/**
- * 旁路推流配置
- */
-data class LiveTranscoding(
-    val width: Int = 360,
-    val height: Int = 640,
-    val videoBitrate: Int = 400,
-    val videoFramerate: Int = 15,
-    val lowLatency: Boolean = false,
-    val videoGop: Int = 30,
-    val backgroundColor: Int = 0x000000,
-    val watermarkUrl: String? = null,
-    val transcodingUsers: List<TranscodingUser>? = null
-)
-
-/**
- * 转码用户配置
- */
-data class TranscodingUser(
-    val uid: String,
-    val x: Double = 0.0,
-    val y: Double = 0.0,
-    val width: Double = 0.0,
-    val height: Double = 0.0,
-    val zOrder: Int = 0,
-    val alpha: Double = 1.0
-)

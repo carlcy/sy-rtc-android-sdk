@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  SY RTC sample network security (IP HTTPS self-signed phase).
+
+  Profiles:
+  - IP HTTPS: trust system CAs + optional user CA (sy-rtc-server-ca.crt in raw/ or user store)
+  - cleartext: only for ip-http / local debug — turn OFF for production domain TLS
+
+  When switching to domain + Let's Encrypt / commercial public CA:
+  - remove cleartextTrafficPermitted
+  - remove domain-config that trusts user CAs for the API host
+  - rely on system CAs only
+-->
+<network-security-config>
+    <!-- Default: system trust (works once public CA is on the domain) -->
+    <base-config cleartextTrafficPermitted="false">
+        <trust-anchors>
+            <certificates src="system" />
+        </trust-anchors>
+    </base-config>
+
+    <!-- IP phase: allow HTTPS to 47.105.48.196 with user/debug CA + optional cleartext -->
+    <domain-config cleartextTrafficPermitted="true">
+        <domain includeSubdomains="true">47.105.48.196</domain>
+        <domain includeSubdomains="true">10.0.2.2</domain>
+        <domain includeSubdomains="true">localhost</domain>
+        <trust-anchors>
+            <certificates src="system" />
+            <!-- Debug: trust replaceable IP self-signed CA shipped in res/raw -->
+            <certificates src="@raw/sy_rtc_server_ca" />
+            <certificates src="user" />
+        </trust-anchors>
+    </domain-config>
+
+    <!-- Domain phase (after LE/commercial works): system trust only, no cleartext -->
+    <domain-config cleartextTrafficPermitted="false">
+        <domain includeSubdomains="true">syrtcapi.shengyuchenyao.cn</domain>
+        <trust-anchors>
+            <certificates src="system" />
+        </trust-anchors>
+    </domain-config>
+</network-security-config>
