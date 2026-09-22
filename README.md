@@ -45,7 +45,7 @@ repositories {
 }
 
 dependencies {
-    implementation 'com.sy.rtc:sy-rtc-android-sdk:3.1.0'
+    implementation 'com.github.carlcy:sy-rtc-android-sdk:v3.1.0'
 }
 ```
 
