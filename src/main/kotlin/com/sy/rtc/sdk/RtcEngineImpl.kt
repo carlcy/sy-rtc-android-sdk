@@ -961,10 +961,36 @@ internal class RtcEngineImpl(
     // ==================== Token刷新 ====================
     
     fun renewToken(token: String) {
-        // Token 由业务后端签发：这里先保存并用于后续（如重连/重新 Join）时携带。
-        // 不尝试对 PeerConnection 做“热更新配置”（不同 WebRTC 包 API 不一致，且热更新容易引发断链）。
+        if (token.isBlank()) {
+            eventHandler?.onError(1000, "token 不能为空")
+            return
+        }
+        // 媒体 PeerConnection 保持不动。信令 URL 的 ?token= 必须换成新 Token，
+        // 否则 onTokenPrivilegeWillExpire 之后服务端会拒绝这条 WebSocket。
         currentToken = token
+        val client = signalingClient
+        if (client != null && isJoined.get()) {
+            client.renewToken(token)
+        }
         Log.d(TAG, "更新Token: len=${token.length}")
+    }
+
+    /**
+     * 切换画质档位，对齐控制面 qualityTier：audio|sd|hd|fhd。
+     * 只改本地编码；计费档位以 Token 里的 qualityTier 为准，换档后请用新 Token 调 [renewToken]。
+     * @return 0 成功，-1 未知档位
+     */
+    fun setVideoQuality(tier: VideoQualityTier): Int {
+        if (tier == VideoQualityTier.AUDIO) {
+            if (isVideoEnabled.get()) {
+                muteLocalVideoStream(true)
+            }
+            Log.d(TAG, "画质切换: audio")
+            return 0
+        }
+        setVideoEncoderConfiguration(tier.width, tier.height, tier.frameRate, tier.bitrateKbps)
+        Log.d(TAG, "画质切换: ${tier.apiValue} ${tier.width}x${tier.height}")
+        return 0
     }
     
     // ==================== 音频配置 ====================

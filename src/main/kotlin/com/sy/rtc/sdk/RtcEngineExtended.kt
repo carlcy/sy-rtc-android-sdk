@@ -76,6 +76,32 @@ data class AudioEffectConfiguration(
 )
 
 /**
+ * 画质档位，与控制面 Token 的 `qualityTier` 一致：`audio` | `sd` | `hd` | `fhd`。
+ *
+ * 分辨率与码率是本地编码预设，不是 SFU 下发的强制模板。
+ */
+enum class VideoQualityTier(
+    val apiValue: String,
+    val width: Int,
+    val height: Int,
+    val frameRate: Int,
+    val bitrateKbps: Int
+) {
+    AUDIO("audio", 0, 0, 0, 0),
+    SD("sd", 640, 480, 15, 500),
+    HD("hd", 1280, 720, 24, 1500),
+    FHD("fhd", 1920, 1080, 30, 3000);
+
+    companion object {
+        @JvmStatic
+        fun fromApi(value: String?): VideoQualityTier? {
+            val raw = value?.trim()?.lowercase() ?: return null
+            return entries.firstOrNull { it.apiValue == raw || it.name.lowercase() == raw }
+        }
+    }
+}
+
+/**
  * 音频录制配置
  */
 data class AudioRecordingConfiguration(

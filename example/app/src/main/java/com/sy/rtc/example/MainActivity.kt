@@ -15,7 +15,6 @@ import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 import com.sy.rtc.sdk.RtcEngine
 import com.sy.rtc.sdk.RtcEventHandler
-import com.sy.rtc.sdk.VideoEncoderConfiguration
 import com.sy.rtc.sdk.VolumeInfo
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -201,7 +200,19 @@ class MainActivity : AppCompatActivity() {
         }
 
         override fun onTokenPrivilegeWillExpire() {
-            runOnUiThread { appendLog("Token 即将过期，请重新拉取并 renew") }
+            runOnUiThread { appendLog("Token 即将过期，正在重新拉取并 renewToken") }
+            Thread {
+                try {
+                    val token = fetchTokenFromServer()
+                    runOnUiThread {
+                        inputToken.setText(token)
+                        engine.renewToken(token)
+                        appendLog("renewToken ok len=${token.length}")
+                    }
+                } catch (e: Exception) {
+                    runOnUiThread { appendLog("renewToken failed: ${e.message}") }
+                }
+            }.start()
         }
 
         override fun onVolumeIndication(speakers: List<VolumeInfo>) {
@@ -344,14 +355,7 @@ class MainActivity : AppCompatActivity() {
         try {
             engine.enableVideo()
             engine.enableLocalVideo(true)
-            engine.setVideoEncoderConfiguration(
-                VideoEncoderConfiguration(
-                    width = 640,
-                    height = 480,
-                    frameRate = 15,
-                    bitrate = 400,
-                )
-            )
+            engine.setVideoQuality("sd")
             engine.setupLocalVideo(R.id.localVideoContainer)
             setStatus("视频已启用")
             appendLog("enableVideo + setupLocalVideo(container)")

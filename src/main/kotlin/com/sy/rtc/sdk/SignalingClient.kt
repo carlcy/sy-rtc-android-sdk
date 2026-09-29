@@ -15,7 +15,7 @@ internal class SignalingClient(
     private val signalingUrl: String,
     private val channelId: String,
     private val uid: String,
-    private val token: String,
+    private var token: String,
     private val onMessage: (type: String, data: Map<String, Any>) -> Unit,
     private val onConnectionFailure: (() -> Unit)? = null
 ) {
@@ -42,38 +42,64 @@ internal class SignalingClient(
             val url = urlWithToken()
             Log.d(TAG, "Connecting signaling (token len=${token.length})")
             val request = Request.Builder().url(url).build()
-            webSocket = client.newWebSocket(request, object : WebSocketListener() {
+            val socket = client.newWebSocket(request, object : WebSocketListener() {
+                private fun isActive(socket: WebSocket): Boolean = socket === webSocket
+
                 override fun onOpen(webSocket: WebSocket, response: Response) {
+                    if (!isActive(webSocket)) return
                     Log.d(TAG, "WebSocket 连接成功")
                     sendJoin()
                 }
 
                 override fun onMessage(webSocket: WebSocket, text: String) {
+                    if (!isActive(webSocket)) return
                     Log.d(TAG, "收到消息: $text")
                     handleMessage(text)
                 }
 
                 override fun onMessage(webSocket: WebSocket, bytes: ByteString) {
+                    if (!isActive(webSocket)) return
                     Log.d(TAG, "收到二进制消息: ${bytes.size} bytes")
                 }
 
                 override fun onClosing(webSocket: WebSocket, code: Int, reason: String) {
+                    if (!isActive(webSocket)) return
                     Log.d(TAG, "WebSocket 正在关闭: code=$code, reason=$reason")
                 }
 
                 override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
+                    if (!isActive(webSocket)) return
                     Log.d(TAG, "WebSocket 已关闭: code=$code, reason=$reason")
                 }
 
                 override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
+                    if (!isActive(webSocket)) {
+                        Log.d(TAG, "忽略已替换连接的失败")
+                        return
+                    }
                     Log.e(TAG, "WebSocket 连接失败", t)
                     onConnectionFailure?.invoke()
                 }
             })
+            val previous = webSocket
+            webSocket = socket
+            if (previous != null && previous !== socket) {
+                // 续期只换 ?token=，不发 leave，避免服务端把用户判成离房。
+                previous.close(1000, "renew-token")
+            }
         } catch (e: Exception) {
             Log.e(TAG, "连接信令服务器失败", e)
             onConnectionFailure?.invoke()
         }
+    }
+
+    /**
+     * 用新的 RTC Token 重连信令。不发送 leave。
+     */
+    fun renewToken(newToken: String) {
+        token = newToken
+        Log.d(TAG, "renewToken len=${newToken.length}")
+        connect()
     }
 
     private fun sendJoin() {

@@ -12,7 +12,7 @@ android {
         minSdk 24
         targetSdk 35
         versionCode 1
-        versionName "3.1.0"
+        versionName "3.2.0"
     }
 
     buildTypes {
@@ -41,6 +41,9 @@ android {
     }
 }
 
+def useLocalSdk = providers.gradleProperty("useLocalSdk").orElse("false").get() == "true"
+def sdkVersion = providers.gradleProperty("sdkVersion").orElse("v3.2.0").get()
+
 dependencies {
     implementation 'androidx.core:core-ktx:1.12.0'
     implementation 'androidx.appcompat:appcompat:1.6.1'
@@ -48,8 +51,12 @@ dependencies {
     implementation 'androidx.constraintlayout:constraintlayout:2.1.4'
     implementation 'com.squareup.okhttp3:okhttp:4.12.0'
 
-    // 源码模块（settings.gradle include）
-    implementation project(':sy-rtc-android-sdk')
-    // WebRTC 为 SDK implementation，对 app 非传递；示例显式依赖
-    implementation 'io.github.webrtc-sdk:android:125.6422.07'
+    if (useLocalSdk) {
+        // 改 SDK 源码时用。客户工程不要写这一行。
+        implementation project(':sy-rtc-android-sdk')
+        implementation 'io.github.webrtc-sdk:android:125.6422.07'
+    } else {
+        // 客户接入就写这一行（版本号与 git tag 一致）。
+        implementation "com.github.carlcy:sy-rtc-android-sdk:${sdkVersion}"
+    }
 }

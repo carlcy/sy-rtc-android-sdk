@@ -1,58 +1,122 @@
-// Maven 发布配置
-apply plugin: 'maven-publish'
-apply plugin: 'signing'
+// 客户坐标（JitPack，与 git tag 一致）：
+//   implementation("com.github.carlcy:sy-rtc-android-sdk:v<VERSION>")
+// JitPack 会把 group/version 重写成 com.github.<user> 与 tag；这里默认写成同一行，
+// 这样 ./gradlew publishToMavenLocal 之后，demo 不用改依赖字符串就能解析。
+//
+// Maven Central（可选）发版前在 gradle.properties 或环境变量覆盖：
+//   POM_GROUP_ID=io.github.carlcy
+//   POM_VERSION=3.2.0          （不要带 v 前缀）
+//   POM_ARTIFACT_ID=sy-rtc-android-sdk
 
-publishing {
-    publications {
-        maven(MavenPublication) {
-            groupId = 'com.sy.rtc'
-            artifactId = 'sy-rtc-android-sdk'
-            version = '3.0.0'
-            
-            from components.release
-            
-            pom {
-                name = 'SY RTC Android SDK'
-                description = 'SY RTC Android SDK for audio communication'
-                url = 'https://github.com/yourusername/sy-rtc-android-sdk'
-                
-                licenses {
-                    license {
-                        name = 'MIT License'
-                        url = 'https://opensource.org/licenses/MIT'
+def versionFile = rootProject.file("VERSION")
+def fileVersion = versionFile.exists() ? versionFile.text.trim() : "0.0.0"
+def requestedVersion = (project.findProperty("POM_VERSION") ?: "").toString().trim()
+def publicationVersion = requestedVersion ? requestedVersion : (fileVersion.startsWith("v") ? fileVersion : "v${fileVersion}")
+def publicationGroup = (project.findProperty("POM_GROUP_ID") ?: "com.github.carlcy").toString().trim()
+def publicationArtifact = (project.findProperty("POM_ARTIFACT_ID") ?: "sy-rtc-android-sdk").toString().trim()
+
+project.group = publicationGroup
+project.version = publicationVersion
+
+def signingKey = (
+        project.findProperty("signingInMemoryKey")
+                ?: System.getenv("SIGNING_KEY")
+                ?: ""
+).toString().trim()
+def signingPassword = (
+        project.findProperty("signingInMemoryKeyPassword")
+                ?: System.getenv("SIGNING_PASSWORD")
+                ?: project.findProperty("signing.password")
+                ?: ""
+).toString()
+def signingKeyId = (project.findProperty("signing.keyId") ?: System.getenv("SIGNING_KEY_ID") ?: "").toString().trim()
+def signingRing = (project.findProperty("signing.secretKeyRingFile") ?: "").toString().trim()
+def shouldSign = signingKey || (signingKeyId && signingRing)
+
+if (shouldSign) {
+    apply plugin: "signing"
+}
+
+def ossrhUser = (
+        project.findProperty("ossrhUsername")
+                ?: System.getenv("OSSRH_USERNAME")
+                ?: System.getenv("CENTRAL_USERNAME")
+                ?: ""
+).toString()
+def ossrhPass = (
+        project.findProperty("ossrhPassword")
+                ?: System.getenv("OSSRH_PASSWORD")
+                ?: System.getenv("CENTRAL_PASSWORD")
+                ?: ""
+).toString()
+def centralUrl = (
+        project.findProperty("mavenCentralUrl")
+                ?: System.getenv("MAVEN_CENTRAL_URL")
+                ?: "https://ossrh-staging-api.central.sonatype.com/service/local/staging/deploy/maven2/"
+).toString()
+
+afterEvaluate {
+    publishing {
+        publications {
+            release(MavenPublication) {
+                from components.release
+
+                groupId = publicationGroup
+                artifactId = publicationArtifact
+                version = publicationVersion
+
+                pom {
+                    name = "SY RTC Android SDK"
+                    description = "SY RTC Android SDK for real-time audio and video. Customer coordinate: com.github.carlcy:sy-rtc-android-sdk"
+                    url = "https://github.com/carlcy/sy-rtc-android-sdk"
+                    inceptionYear = "2026"
+
+                    licenses {
+                        license {
+                            name = "MIT License"
+                            url = "https://opensource.org/licenses/MIT"
+                        }
+                    }
+
+                    developers {
+                        developer {
+                            id = "carlcy"
+                            name = "SY RTC"
+                            email = "carlcy2023@163.com"
+                        }
+                    }
+
+                    scm {
+                        connection = "scm:git:https://github.com/carlcy/sy-rtc-android-sdk.git"
+                        developerConnection = "scm:git:ssh://git@github.com/carlcy/sy-rtc-android-sdk.git"
+                        url = "https://github.com/carlcy/sy-rtc-android-sdk"
                     }
                 }
-                
-                developers {
-                    developer {
-                        id = 'sy-rtc'
-                        name = 'SY RTC Team'
-                        email = 'support@sy-rtc.com'
-                    }
-                }
-                
-                scm {
-                    connection = 'scm:git:https://github.com/yourusername/sy-rtc-android-sdk.git'
-                    developerConnection = 'scm:git:https://github.com/yourusername/sy-rtc-android-sdk.git'
-                    url = 'https://github.com/yourusername/sy-rtc-android-sdk'
+            }
+        }
+
+        repositories {
+            maven {
+                name = "MavenCentral"
+                url = uri(centralUrl)
+                credentials {
+                    username = ossrhUser
+                    password = ossrhPass
                 }
             }
         }
     }
-    
-    repositories {
-        maven {
-            name = "MavenCentral"
-            url = "https://s01.oss.sonatype.org/service/local/staging/deploy/maven2/"
-            credentials {
-                username = project.findProperty("ossrhUsername") ?: ""
-                password = project.findProperty("ossrhPassword") ?: ""
+
+    if (shouldSign) {
+        signing {
+            if (signingKey) {
+                if (signingKeyId) {
+                    useInMemoryPgpKeys(signingKeyId, signingKey, signingPassword)
+                } else {
+                    useInMemoryPgpKeys(signingKey, signingPassword)
+                }
             }
+            sign publishing.publications.release
         }
     }
 }
-
-signing {
-    sign publishing.publications.maven
-}
-

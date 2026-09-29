@@ -1,5 +1,22 @@
 # SY RTC Android SDK 更新日志
 
+## 3.2.0
+
+### 接入
+
+- 客户依赖改为 JitPack 坐标：`implementation("com.github.carlcy:sy-rtc-android-sdk:v3.2.0")`。Demo 默认使用同一行，不再下载或解压 AAR。
+- `publish.gradle` 与 `VERSION` 对齐；无签名密钥时 `publishToMavenLocal` / JitPack 仍可构建。Maven Central 需 owner 配置 `io.github.carlcy` 与签名，见 `PUBLISH_GUIDE.md`。
+
+### 新增（不改变已有方法签名）
+
+- `RtcEngine.setVideoQuality(VideoQualityTier)` / `setVideoQuality("audio"|"sd"|"hd"|"fhd")` — 本地画质档位，对齐控制面 `qualityTier`
+- `RoomService.getRoomAttrs` / `setRoomAttrs` / `setRoomAttr` / `deleteRoomAttr`
+- `RoomInfo.currentSeats`、`RoomInfo.attrs`（缺省为空，旧构造仍可用）
+
+### 行为
+
+- `renewToken` 在已进房时用新 Token 重连信令（不发 leave，不拆 PeerConnection）
+
 ## 3.1.0
 
 ### 重大变更 / Breaking

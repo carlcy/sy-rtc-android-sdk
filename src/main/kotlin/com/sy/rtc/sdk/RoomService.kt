@@ -29,7 +29,9 @@ data class RoomInfo(
     val status: String = "active",
     val onlineCount: Int = 0,
     val maxSeats: Int = 8,
-    val createTime: String? = null
+    val createTime: String? = null,
+    val currentSeats: Int = 0,
+    val attrs: Map<String, String> = emptyMap()
 ) {
     companion object {
         /**
@@ -46,7 +48,9 @@ data class RoomInfo(
                 status = json.optString("status", "active"),
                 onlineCount = onlineCount,
                 maxSeats = json.optInt("maxSeats", 8),
-                createTime = json.optString("createTime").takeIf { it.isNotEmpty() }
+                createTime = json.optString("createTime").takeIf { it.isNotEmpty() },
+                currentSeats = json.optInt("currentSeats", 0),
+                attrs = readAttrs(json)
             )
         }
     }
@@ -393,6 +397,100 @@ class RoomService(
             out
         }, callback)
     }
+
+    /**
+     * 读取房间自定义属性。
+     *
+     * `GET /api/room/{channelId}/attrs`，`data` 为字符串键值，或 `{ "attrs": { ... } }`。
+     */
+    fun getRoomAttrs(channelId: String, callback: (Map<String, String>?, Exception?) -> Unit) {
+        runOnBackground({
+            val (_, respBody) = executeRequest("GET", "/api/room/$channelId/attrs")
+            val json = parseEnvelope(respBody, "获取房间属性失败")
+            val data = json.optJSONObject("data") ?: JSONObject()
+            readAttrs(data).ifEmpty { readAttrs(json) }
+        }, callback)
+    }
+
+    /**
+     * 合并写入房间自定义属性（未出现的 key 不删除）。
+     *
+     * `PUT /api/room/{channelId}/attrs`，body：`{"attrs":{"key":"value"}}`。
+     */
+    fun setRoomAttrs(
+        channelId: String,
+        attrs: Map<String, String>,
+        callback: (Boolean, Exception?) -> Unit
+    ) {
+        runOnBackground({
+            val body = JSONObject().apply { put("attrs", JSONObject(attrs)) }.toString()
+            val (_, respBody) = executeRequest("PUT", "/api/room/$channelId/attrs", body = body)
+            parseEnvelope(respBody, "设置房间属性失败")
+            true
+        }) { success, error ->
+            callback(success ?: false, error)
+        }
+    }
+
+    /**
+     * 写入单个房间属性。见 [setRoomAttrs]。
+     */
+    fun setRoomAttr(
+        channelId: String,
+        key: String,
+        value: String,
+        callback: (Boolean, Exception?) -> Unit
+    ) = setRoomAttrs(channelId, mapOf(key to value), callback)
+
+    /**
+     * 删除单个房间属性。
+     *
+     * `DELETE /api/room/{channelId}/attrs/{key}`。
+     */
+    fun deleteRoomAttr(
+        channelId: String,
+        key: String,
+        callback: (Boolean, Exception?) -> Unit
+    ) {
+        runOnBackground({
+            val encodedKey = java.net.URLEncoder.encode(key, "UTF-8")
+            val (_, respBody) = executeRequest("DELETE", "/api/room/$channelId/attrs/$encodedKey")
+            parseEnvelope(respBody, "删除房间属性失败")
+            true
+        }) { success, error ->
+            callback(success ?: false, error)
+        }
+    }
+
+    private fun parseEnvelope(body: String, fallback: String): JSONObject {
+        val json = try {
+            JSONObject(body)
+        } catch (e: Exception) {
+            throw Exception("$fallback: ${body.take(180)}", e)
+        }
+        if (json.optInt("code", -1) != 0) {
+            throw Exception(json.optString("msg", fallback))
+        }
+        return json
+    }
+}
+
+private fun readAttrs(json: JSONObject): Map<String, String> {
+    val obj = json.optJSONObject("attrs")
+        ?: json.optJSONObject("attributes")
+        ?: json.optJSONObject("extra")
+        ?: return emptyMap()
+    val map = linkedMapOf<String, String>()
+    val keys = obj.keys()
+    while (keys.hasNext()) {
+        val key = keys.next()
+        val value = obj.opt(key)
+        if (value == null || value == JSONObject.NULL || value is JSONObject || value is org.json.JSONArray) {
+            continue
+        }
+        map[key] = value.toString()
+    }
+    return map
 }
 
 /**

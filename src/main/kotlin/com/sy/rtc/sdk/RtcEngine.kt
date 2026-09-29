@@ -236,10 +236,33 @@ class RtcEngine private constructor() {
     // ==================== Token 刷新 ====================
 
     /**
-     * 更新 Token
+     * 更新 RTC Token。
+     *
+     * 已在频道内时会用新 Token 重连信令（URL `?token=`），不发送 leave，也不拆掉媒体连接。
+     * 收到 [RtcEventHandler.onTokenPrivilegeWillExpire] 后，向业务后端重新要 Token，再调用本方法。
      */
     fun renewToken(token: String) {
         impl?.renewToken(token)
+    }
+
+    /**
+     * 切换画质档位（控制面 `qualityTier`：`audio` / `sd` / `hd` / `fhd`）。
+     *
+     * 只调整本地采集与编码。分钟计费档位写在 Token 里，换档后请让业务后端按新 `qualityTier`
+     * 重新签发 Token，并调用 [renewToken]。
+     *
+     * @return 0 成功，-1 未知档位或引擎未初始化
+     */
+    fun setVideoQuality(tier: VideoQualityTier): Int {
+        return impl?.setVideoQuality(tier) ?: -1
+    }
+
+    /**
+     * [setVideoQuality] 的字符串形式，便于与 Token 参数 `qualityTier` 对齐。
+     */
+    fun setVideoQuality(qualityTier: String): Int {
+        val tier = VideoQualityTier.fromApi(qualityTier) ?: return -1
+        return setVideoQuality(tier)
     }
 
     // ==================== 音频参数配置 ====================
