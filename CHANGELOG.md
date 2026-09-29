@@ -9,8 +9,11 @@
 
 ### 新增（不改变已有方法签名）
 
-- `RtcEngine.setVideoQuality(VideoQualityTier)` / `setVideoQuality("audio"|"sd"|"hd"|"fhd")` — 本地画质档位，对齐控制面 `qualityTier`
-- `RoomService.getRoomAttrs` / `setRoomAttrs` / `setRoomAttr` / `deleteRoomAttr`
+- `RtcEngine.setVideoQuality(VideoQualityTier)` / `setVideoQuality("audio"|"sd"|"hd"|"fhd")` — 本地画质档位
+- `RoomService.switchQualityTier` — `POST /api/rtc/quality/switch`（用户 JWT）
+- `RoomService.renewToken` — `POST /api/rtc/token/renew`，参数与 `fetchToken` 相同
+- `RoomService.setRoomAttribute` / `getRoomAttributes` / `deleteRoomAttribute` — `POST /api/rtc/channel/meta/set|get|delete`（用户 JWT）
+- 拉 Token / 续期遇到业务码 4031（停用）、4032（吊销）、4033（过期）时，callback 收到 `RtcCredentialException`
 - `RoomInfo.currentSeats`、`RoomInfo.attrs`（缺省为空，旧构造仍可用）
 
 ### 行为

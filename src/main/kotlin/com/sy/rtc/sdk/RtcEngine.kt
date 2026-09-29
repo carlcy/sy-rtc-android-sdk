@@ -248,8 +248,8 @@ class RtcEngine private constructor() {
     /**
      * 切换画质档位（控制面 `qualityTier`：`audio` / `sd` / `hd` / `fhd`）。
      *
-     * 只调整本地采集与编码。分钟计费档位写在 Token 里，换档后请让业务后端按新 `qualityTier`
-     * 重新签发 Token，并调用 [renewToken]。
+     * 只调整本地采集与编码。控制面换档用 [RoomService.switchQualityTier]（用户 JWT）。
+     * 若该接口返回了新 Token，再调用 [renewToken]。
      *
      * @return 0 成功，-1 未知档位或引擎未初始化
      */

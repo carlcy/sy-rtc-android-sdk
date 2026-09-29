@@ -13,16 +13,15 @@ import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
+import com.sy.rtc.sdk.RoomService
+import com.sy.rtc.sdk.RtcCredentialException
 import com.sy.rtc.sdk.RtcEngine
 import com.sy.rtc.sdk.RtcEventHandler
 import com.sy.rtc.sdk.VolumeInfo
-import okhttp3.OkHttpClient
-import okhttp3.Request
-import okhttp3.RequestBody.Companion.toRequestBody
-import org.json.JSONObject
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 
 /**
@@ -203,14 +202,14 @@ class MainActivity : AppCompatActivity() {
             runOnUiThread { appendLog("Token 即将过期，正在重新拉取并 renewToken") }
             Thread {
                 try {
-                    val token = fetchTokenFromServer()
+                    val token = requestRtcToken(renew = true)
                     runOnUiThread {
                         inputToken.setText(token)
                         engine.renewToken(token)
                         appendLog("renewToken ok len=${token.length}")
                     }
                 } catch (e: Exception) {
-                    runOnUiThread { appendLog("renewToken failed: ${e.message}") }
+                    runOnUiThread { appendLog(formatTokenError("renewToken", e)) }
                 }
             }.start()
         }
@@ -253,7 +252,7 @@ class MainActivity : AppCompatActivity() {
         appendLog("fetch token…")
         Thread {
             try {
-                val token = fetchTokenFromServer()
+                val token = requestRtcToken(renew = false)
                 runOnUiThread {
                     inputToken.setText(token)
                     setStatus("Token 已填入")
@@ -263,7 +262,7 @@ class MainActivity : AppCompatActivity() {
             } catch (e: Exception) {
                 runOnUiThread {
                     setStatus("拉 Token 失败: ${e.message}")
-                    appendLog("fetch token failed: ${e.message}")
+                    appendLog(formatTokenError("fetch token", e))
                     toast("拉 Token 失败")
                 }
             }
@@ -291,7 +290,7 @@ class MainActivity : AppCompatActivity() {
             try {
                 if (token.isEmpty()) {
                     appendLogUi("token 为空，自动拉取…")
-                    token = fetchTokenFromServer()
+                    token = requestRtcToken(renew = false)
                     runOnUiThread { inputToken.setText(token) }
                 }
                 runOnUiThread {
@@ -303,13 +302,13 @@ class MainActivity : AppCompatActivity() {
                         appendLog("join requested channel=$channel uid=$uid")
                     } catch (e: Exception) {
                         setStatus("加入失败: ${e.message}")
-                        appendLog("join failed: ${e.message}")
+                        appendLog(formatTokenError("join", e))
                     }
                 }
             } catch (e: Exception) {
                 runOnUiThread {
                     setStatus("加入失败: ${e.message}")
-                    appendLog("join failed: ${e.message}")
+                    appendLog(formatTokenError("join", e))
                 }
             }
         }.start()
@@ -382,34 +381,45 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    private fun fetchTokenFromServer(): String {
-        val apiBase = inputApiBase.text.toString().trim().trimEnd('/')
-        val appId = inputAppId.text.toString().trim()
+    private fun roomService(): RoomService {
+        val service = RoomService(
+            apiBaseUrl = inputApiBase.text.toString().trim(),
+            appId = inputAppId.text.toString().trim()
+        )
         val secret = inputAppSecret.text.toString().trim()
+        if (secret.isNotEmpty()) service.setAppSecret(secret)
+        service.setUserId(inputUid.text.toString().trim())
+        return service
+    }
+
+    /** 必须在后台线程调用。RoomService 的 callback 回到主线程。 */
+    private fun requestRtcToken(renew: Boolean): String {
         val channelId = inputChannel.text.toString().trim()
         val uid = inputUid.text.toString().trim()
-        val url =
-            "$apiBase/api/rtc/token?channelId=${java.net.URLEncoder.encode(channelId, "UTF-8")}" +
-                "&uid=${java.net.URLEncoder.encode(uid, "UTF-8")}&expireHours=24"
-        val client = OkHttpClient.Builder()
-            .connectTimeout(12, TimeUnit.SECONDS)
-            .readTimeout(12, TimeUnit.SECONDS)
-            .build()
-        val request = Request.Builder()
-            .url(url)
-            .post(ByteArray(0).toRequestBody(null))
-            .addHeader("X-App-Id", appId)
-            .addHeader("X-App-Secret", secret)
-            .build()
-        client.newCall(request).execute().use { response ->
-            if (!response.isSuccessful) throw Exception("HTTP ${response.code}")
-            val body = response.body?.string() ?: throw Exception("empty body")
-            val json = JSONObject(body)
-            if (json.optInt("code", -1) != 0) {
-                throw Exception(json.optString("msg", "unknown"))
-            }
-            val data = json.opt("data") ?: throw Exception("no data")
-            return data.toString().trim('"')
+        val latch = CountDownLatch(1)
+        var token: String? = null
+        var error: Exception? = null
+        val callback: (String?, Exception?) -> Unit = { value, err ->
+            token = value
+            error = err
+            latch.countDown()
+        }
+        val service = roomService()
+        if (renew) {
+            service.renewToken(channelId, uid, callback = callback)
+        } else {
+            service.fetchToken(channelId, uid, callback = callback)
+        }
+        if (!latch.await(15, TimeUnit.SECONDS)) throw Exception("请求 Token 超时")
+        error?.let { throw it }
+        return token?.takeIf { it.isNotEmpty() } ?: throw Exception("Token 为空")
+    }
+
+    private fun formatTokenError(action: String, error: Exception): String {
+        return if (error is RtcCredentialException) {
+            "$action 凭证失败 code=${error.businessCode} ${error.message}"
+        } else {
+            "$action failed: ${error.message}"
         }
     }
 

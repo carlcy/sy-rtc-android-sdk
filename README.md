@@ -140,13 +140,21 @@ engine.leave()
 engine.release()
 ```
 
-Token 快过期时，后端重新签发后调用 `engine.renewToken(newToken)`。SDK 会用新 Token 重连信令，不发送 leave，也不拆掉当前媒体连接。
-
-换画质（本地编码；计费档位仍以新 Token 的 `qualityTier` 为准）：
+Token 快过期时：
 
 ```kotlin
-engine.setVideoQuality("hd") // audio | sd | hd | fhd
+rooms.renewToken(channelId, uid) { newToken, error ->
+    if (error is RtcCredentialException) {
+        // 4031 停用，4032 吊销，4033 过期
+        return@renewToken
+    }
+    if (newToken != null) engine.renewToken(newToken)
+}
 ```
+
+`RoomService.renewToken` 对应 `POST /api/rtc/token/renew`。`RtcEngine.renewToken` 用新 Token 重连信令，不发送 leave，也不拆掉当前媒体连接。拉 Token 和续期若返回 4031 / 4032 / 4033，callback 的异常是 `RtcCredentialException`。
+
+换画质：本地编码用 `engine.setVideoQuality("hd")`（`audio` | `sd` | `hd` | `fhd`）。控制面档位用用户 JWT 调用 `rooms.switchQualityTier(channelId, "hd")`（`POST /api/rtc/quality/switch`）。若响应里带了新 Token，再 `engine.renewToken`。
 
 ## 示例工程
 
@@ -189,8 +197,9 @@ Maven Central 是可选的正式仓库，需要 Owner 自己准备签名和 Cent
 | `setClientRole` / `setChannelProfile` | `HOST` / `AUDIENCE` / `PUBLISHER` / `SUBSCRIBER`；场景需在 `join` 前设置 |
 | `enableLocalAudio` / `muteLocalAudio` | 本地音频 |
 | `enableVideo` / `setVideoQuality` / `setupLocalVideo` / `setupRemoteVideo` | 视频。`setup*Video` 可传容器 id 或 `ViewGroup` |
-| `RoomService.getToken` / `fetchToken` | `POST /api/rtc/token`，可带 `role`、`qualityTier` |
-| `RoomService.getRoomAttrs` / `setRoomAttr` | `GET`/`PUT`/`DELETE /api/room/{channelId}/attrs` |
+| `RoomService.getToken` / `fetchToken` / `renewToken` | `POST /api/rtc/token` 与 `POST /api/rtc/token/renew`。4031/4032/4033 为 `RtcCredentialException` |
+| `RoomService.switchQualityTier` | `POST /api/rtc/quality/switch`，只认用户 JWT |
+| `setRoomAttribute` / `getRoomAttributes` / `deleteRoomAttribute` | `POST /api/rtc/channel/meta/set`、`get`、`delete`，只认用户 JWT |
 
 `audience` / `subscriber` 只关本地推流，不是 SFU 强制切断。
 
