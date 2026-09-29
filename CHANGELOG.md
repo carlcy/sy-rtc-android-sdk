@@ -15,6 +15,8 @@
 - `RoomService.setRoomAttribute` / `getRoomAttributes` / `deleteRoomAttribute` — `POST /api/rtc/channel/meta/set|get|delete`（用户 JWT）
 - 拉 Token / 续期遇到业务码 4031（停用）、4032（吊销）、4033（过期）时，callback 收到 `RtcCredentialException`
 - `RoomInfo.currentSeats`、`RoomInfo.attrs`（缺省为空，旧构造仍可用）
+- `RtcEngine.VERSION = "3.2.0"`
+- 端上能力（不是 SFU）：`onNetworkQuality` 使用本机 RTT/丢包；`switchCamera`；`getAudioRoute` / `onAudioRoutingChanged`；`setVideoFrameProcessor` 与编码前提亮；`startScreenCapture(intent, config)`；本地/远端静音状态；PCM 音量提示；`setStreamExtraInfo`；`enableCustomVideoCapture` / `pushExternalVideoFrame`；ICE/信令重连与 `onRejoinChannelSuccess`；`sendSei`（DataChannel 前缀，不是码流 SEI）
 
 ### 行为
 

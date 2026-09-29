@@ -45,7 +45,10 @@ data class ScreenCaptureConfiguration(
 )
 
 /**
- * 美颜配置
+ * 美颜配置。
+ *
+ * [enabled] 时，SDK 在送入编码器之前抬高 Y 平面（[lighteningLevel]）。
+ * 这是端上预处理，不是云端美颜。自定义 [VideoFrameProcessor] 会替换这条内置处理。
  */
 data class BeautyOptions(
     val enabled: Boolean = false,
@@ -53,6 +56,16 @@ data class BeautyOptions(
     val rednessLevel: Double = 0.1,
     val smoothnessLevel: Double = 0.5
 )
+
+/**
+ * 本地采集帧钩子。返回原帧或新帧。
+ *
+ * SDK 会在把帧交给编码器后释放「新返回的帧」。若要自行持有，请先 retain。
+ * 内置美颜与此钩子二选一：设置本处理器后不再叠加内置提亮。
+ */
+interface VideoFrameProcessor {
+    fun onFrameCaptured(frame: org.webrtc.VideoFrame): org.webrtc.VideoFrame
+}
 
 /**
  * 音频混音配置

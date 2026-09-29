@@ -195,8 +195,18 @@ Maven Central 是可选的正式仓库，需要 Owner 自己准备签名和 Cent
 | `setApiBaseUrl` / `setSignalingServerUrl` / `setApiAuthToken` | 控制面与信令地址；JWT 与 RTC Token 不是同一个 |
 | `join` / `leave` / `renewToken` | 进出频道；续期重连信令 |
 | `setClientRole` / `setChannelProfile` | `HOST` / `AUDIENCE` / `PUBLISHER` / `SUBSCRIBER`；场景需在 `join` 前设置 |
-| `enableLocalAudio` / `muteLocalAudio` | 本地音频 |
-| `enableVideo` / `setVideoQuality` / `setupLocalVideo` / `setupRemoteVideo` | 视频。`setup*Video` 可传容器 id 或 `ViewGroup` |
+| `RtcEngine.VERSION` | 常量 `3.2.0`，与 `VERSION`、Demo `versionName` 一致 |
+| `enableLocalAudio` / `muteLocalAudio` / `isLocalAudioMuted` | 本地音频。静音会通过信令通知对端 `onUserMuteAudio` |
+| `muteRemoteAudioStream` / `muteAllRemoteAudioStreams` | 停止播放该路远端音频（本机 `AudioTrack`），不是服务端强制断流 |
+| `enableVideo` / `setVideoQuality` / `switchCamera` / `setupLocalVideo` / `setupRemoteVideo` | 视频。`switchCamera` 在摄像头采集时切换前后摄 |
+| `setEnableSpeakerphone` / `getAudioRoute` | 扬声器或听筒。路由回调 `onAudioRoutingChanged`：0 扬声器，1 耳机，2 蓝牙，3 听筒 |
+| `setBeautyEffectOptions` / `setVideoFrameProcessor` | 内置提亮作用于编码前的帧；自定义处理器会替换内置提亮 |
+| `startScreenCapture(intent, config)` | 需要 MediaProjection 授权。没有 Intent 不会报成功 |
+| `enableCustomVideoCapture` / `pushExternalVideoFrame` | 外部视频帧送入本地视频源 |
+| `enableAudioVolumeIndication` | 音量来自 PCM 或 WebRTC `audioLevel`，没有样本时为 0 |
+| `onNetworkQuality` | 本机 ICE RTT 与丢包估计。没有样本时是 `unknown`，不是 SFU 探测 |
+| `setStreamExtraInfo` | 信令广播附加信息，对端 `onStreamExtraInfoUpdated` |
+| `createDataStream` / `sendStreamMessage` / `sendSei` | DataChannel。`sendSei` 只是带前缀的数据通道消息，不是码流 SEI |
 | `RoomService.getToken` / `fetchToken` / `renewToken` | `POST /api/rtc/token` 与 `POST /api/rtc/token/renew`。4031/4032/4033 为 `RtcCredentialException` |
 | `RoomService.switchQualityTier` | `POST /api/rtc/quality/switch`，只认用户 JWT |
 | `setRoomAttribute` / `getRoomAttributes` / `deleteRoomAttribute` | `POST /api/rtc/channel/meta/set`、`get`、`delete`，只认用户 JWT |

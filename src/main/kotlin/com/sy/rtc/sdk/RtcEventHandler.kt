@@ -234,6 +234,22 @@ open class RtcEventHandler {
      * @param message 消息内容（JSON字符串）
      */
     open fun onChannelMessage(uid: String, message: String) {}
+
+    /**
+     * 对端通过信令更新的流附加信息。
+     *
+     * 这是频道消息里的 `stream-extra` 信封，不是 SFU 的流元数据。
+     * 同一条原文仍会先走 [onChannelMessage]。
+     */
+    open fun onStreamExtraInfoUpdated(uid: String, extra: String) {}
+
+    /**
+     * DataChannel 上的 SEI 风格消息。
+     *
+     * 载荷带端上前缀，走数据通道，不是 H.264 码流 SEI。
+     * 原始字节（含前缀）仍会通过 [onStreamMessage] 给出。
+     */
+    open fun onSeiMessage(uid: String, streamId: Int, data: ByteArray) {}
 }
 
 /**

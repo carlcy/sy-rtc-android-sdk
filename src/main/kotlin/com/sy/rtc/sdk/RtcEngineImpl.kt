@@ -1,6 +1,7 @@
 package com.sy.rtc.sdk
 
 import android.content.Context
+import android.content.Intent
 import android.media.AudioManager
 import android.media.AudioRecord
 import android.media.MediaRecorder
@@ -113,17 +114,52 @@ internal class RtcEngineImpl(
     // 美颜滤镜
     private var beautyFilter: BeautyFilter? = null
     
-    // 数据流 - WebRTC DataChannel
+    // 数据流 - WebRTC DataChannel（按 streamId、对端 uid 保存，不建空的 default PC）
     private val dataChannelMap = ConcurrentHashMap<Int, org.webrtc.DataChannel>()
+    private val streamSpecs = ConcurrentHashMap<Int, StreamSpec>()
+    private val dataChannels = ConcurrentHashMap<Int, ConcurrentHashMap<String, org.webrtc.DataChannel>>()
+    private val nextStreamId = AtomicInteger(0)
     private val peerConnections = ConcurrentHashMap<String, org.webrtc.PeerConnection>()
     
     // 远端视频轨道
     private val remoteVideoTracks = ConcurrentHashMap<String, org.webrtc.VideoTrack>()
+    private val remoteAudioTracks = ConcurrentHashMap<String, org.webrtc.AudioTrack>()
     // 远端视频渲染器（便于 release 时移除）
     private val remoteRenderers = ConcurrentHashMap<String, org.webrtc.SurfaceViewRenderer>()
     private val pendingRemoteContainers = ConcurrentHashMap<String, java.lang.ref.WeakReference<android.view.ViewGroup>>()
     private var localRenderer: org.webrtc.SurfaceViewRenderer? = null
     private var eglBase: EglBase? = null
+    private var localVideoSource: VideoSource? = null
+    private var screenCapturer: VideoCapturer? = null
+    private var screenCaptureIntent: Intent? = null
+    private var customVideoCapture = false
+    private var usingFrontCamera = true
+    private var videoFrameProcessor: VideoFrameProcessor? = null
+    private var frameProcessor: LocalVideoProcessor? = null
+    private val reconnectTracker = ReconnectTracker()
+    private val iceRecoveryPending = AtomicBoolean(false)
+    private val signalingRetryPosted = AtomicBoolean(false)
+    private var signalingRetry: Runnable? = null
+    private val mainHandler by lazy { android.os.Handler(android.os.Looper.getMainLooper()) }
+    private var localAudioMuted = false
+    private var localVideoMuted = false
+    private var allRemoteAudioMuted = false
+    private var allRemoteVideoMuted = false
+    private val remoteAudioMuted = ConcurrentHashMap<String, Boolean>()
+    private var localPcmVolume = 0
+    private var localPcmSeen = false
+    private val remotePcmVolume = ConcurrentHashMap<String, Int>()
+    private val remotePcmSeen = ConcurrentHashMap.newKeySet<String>()
+    private var smoothedLocalVolume = 0
+    private val smoothedRemoteVolume = ConcurrentHashMap<String, Int>()
+    private var volumeSmooth = 3
+    private var streamExtraInfo: String = ""
+    private var statsRunnable: Runnable? = null
+    private val lastBytesSent = ConcurrentHashMap<String, Long>()
+    private val lastBytesRecv = ConcurrentHashMap<String, Long>()
+    private val lastStatsMs = ConcurrentHashMap<String, Long>()
+    private var lastNetwork = NetworkQuality(0, 0, 0, 0)
+    private var publishedAudioRoute = -1
     
     // 频道状态
     private var currentChannelId: String? = null
@@ -258,6 +294,9 @@ internal class RtcEngineImpl(
         currentChannelId = channelId
         currentUid = uid
         currentToken = token
+        reconnectTracker.reset()
+        iceRecoveryPending.set(false)
+        signalingRetryPosted.set(false)
         // 加入频道即视为“已加入”（即便房间内暂时没有其他人）
         joinStartTime = System.currentTimeMillis()
         isJoined.set(true)
@@ -275,18 +314,17 @@ internal class RtcEngineImpl(
             signalingClient = SignalingClient(
                 signalingUrl, channelId, uid, token,
                 onMessage = { type, data -> handleSignalingMessage(type, data, channelId) },
-                onConnectionFailure = {
-                eventHandler?.onConnectionStateChanged("failed", "connection_failed")
-                eventHandler?.onError(1003, "信令连接失败")
-            }
+                onConnectionFailure = { handleSignalingFailure() }
             )
             signalingClient?.connect()
             startMemberStatePoll(channelId, uid)
+            startStatsPoll()
             
             // 创建音频轨道
             val audioSource = peerConnectionFactory?.createAudioSource(org.webrtc.MediaConstraints())
             localAudioTrack = peerConnectionFactory?.createAudioTrack("audio_track", audioSource)
-            localAudioTrack?.setEnabled(true)
+            localAudioTrack?.setEnabled(!localAudioMuted && clientRole.canPublish())
+            attachLocalVolumeSink()
         } catch (e: Exception) {
             Log.e(TAG, "加入频道失败", e)
         }
@@ -302,6 +340,11 @@ internal class RtcEngineImpl(
         
         try {
             stopMemberStatePoll()
+            stopStatsPoll()
+            signalingRetry?.let { mainHandler.removeCallbacks(it) }
+            signalingRetry = null
+            signalingRetryPosted.set(false)
+            reconnectTracker.reset()
             // 断开信令连接
             signalingClient?.disconnect()
             signalingClient = null
@@ -326,6 +369,15 @@ internal class RtcEngineImpl(
                 remoteRenderers.clear()
             }
             remoteVideoTracks.clear()
+            remoteAudioTracks.clear()
+            remotePcmVolume.clear()
+            remotePcmSeen.clear()
+            smoothedRemoteVolume.clear()
+            localPcmVolume = 0
+            localPcmSeen = false
+            dataChannels.values.forEach { map -> map.values.forEach { channel -> channel.close() } }
+            dataChannels.clear()
+            dataChannelMap.clear()
             videoViews.keys.filter { it != "local" }.forEach { videoViews.remove(it) }
             val stats = mapOf<String, Any?>(
                 "duration" to 0,
@@ -380,10 +432,17 @@ internal class RtcEngineImpl(
                 }
             }
             "user-list" -> {
-                // 信令确认加入成功，触发 onJoinChannelSuccess
                 val elapsed = (System.currentTimeMillis() - joinStartTime).toInt().coerceAtLeast(0)
-                eventHandler?.onJoinChannelSuccess(channelId, currentUid ?: "", elapsed)
-                eventHandler?.onConnectionStateChanged("connected", "user-list")
+                when (reconnectTracker.onConnected()) {
+                    RejoinSignal.REJOINED -> {
+                        eventHandler?.onRejoinChannelSuccess(channelId, currentUid ?: "", elapsed)
+                        eventHandler?.onConnectionStateChanged("connected", "rejoined")
+                    }
+                    else -> {
+                        eventHandler?.onJoinChannelSuccess(channelId, currentUid ?: "", elapsed)
+                        eventHandler?.onConnectionStateChanged("connected", "user-list")
+                    }
+                }
                 val usersAny = data["users"]
                 val users: List<String> = when (usersAny) {
                     is org.json.JSONArray -> (0 until usersAny.length()).mapNotNull { idx -> usersAny.optString(idx)?.takeIf { it.isNotBlank() } }
@@ -422,6 +481,9 @@ internal class RtcEngineImpl(
                                                 override fun onSetSuccess() {
                                                     signalingClient?.sendAnswer(it.description, fromUid)
                                                     flushPendingLocalIce(fromUid)
+                                                    if (ensureOutgoingDataChannels(fromUid)) {
+                                                        renegotiate(fromUid)
+                                                    }
                                                 }
                                                 override fun onSetFailure(error: String?) {
                                                     Log.e(TAG, "设置本地 Answer 失败: $error")
@@ -511,6 +573,10 @@ internal class RtcEngineImpl(
                     pendingLocalIceByUid.remove(uid)
                     pendingRemoteIceByUid.remove(uid)
                     remoteVideoTracks.remove(uid)
+                    remoteAudioTracks.remove(uid)
+                    remotePcmVolume.remove(uid)
+                    remotePcmSeen.remove(uid)
+                    dataChannels.values.forEach { it.remove(uid)?.close() }
                     val viewId = videoViews[uid]
                     android.os.Handler(android.os.Looper.getMainLooper()).post {
                         remoteRenderers.remove(uid)?.let { r ->
@@ -525,6 +591,9 @@ internal class RtcEngineImpl(
                 val fromUid = (data["uid"] as? String) ?: ""
                 val msg = (data["message"] as? String) ?: ""
                 eventHandler?.onChannelMessage(fromUid, msg)
+                if (fromUid != currentUid) {
+                    dispatchClientEnvelope(fromUid, msg)
+                }
             }
             "error" -> {
                 val msg = (data["error"] as? String) ?: "信令错误"
@@ -554,6 +623,13 @@ internal class RtcEngineImpl(
             override fun onSignalingChange(state: PeerConnection.SignalingState?) {}
             override fun onIceConnectionChange(state: PeerConnection.IceConnectionState?) {
                 Log.d(TAG, "IceConnectionState(remote=$remoteUid): $state")
+                when (state) {
+                    PeerConnection.IceConnectionState.DISCONNECTED,
+                    PeerConnection.IceConnectionState.FAILED -> handleIceLost(remoteUid)
+                    PeerConnection.IceConnectionState.CONNECTED,
+                    PeerConnection.IceConnectionState.COMPLETED -> handleIceRecovered(remoteUid)
+                    else -> {}
+                }
             }
             override fun onIceConnectionReceivingChange(p0: Boolean) {}
             override fun onIceGatheringChange(state: PeerConnection.IceGatheringState?) {}
@@ -571,14 +647,21 @@ internal class RtcEngineImpl(
             override fun onIceCandidatesRemoved(candidates: Array<out IceCandidate>?) {}
             override fun onAddStream(stream: MediaStream?) {}
             override fun onRemoveStream(stream: MediaStream?) {}
-            override fun onDataChannel(channel: DataChannel?) {}
+            override fun onDataChannel(channel: DataChannel?) {
+                acceptIncomingDataChannel(remoteUid, channel)
+            }
             override fun onRenegotiationNeeded() {}
             override fun onAddTrack(receiver: RtpReceiver?, streams: Array<out MediaStream>?) {
                 receiver?.track()?.let { track ->
-                    if (track.kind() == "video") {
+                    if (track.kind() == "audio") {
+                        val audioTrack = track as org.webrtc.AudioTrack
+                        remoteAudioTracks[remoteUid] = audioTrack
+                        applyRemoteAudio(remoteUid)
+                        attachRemoteVolumeSink(remoteUid, audioTrack)
+                    } else if (track.kind() == "video") {
                         val videoTrack = track as org.webrtc.VideoTrack
                         remoteVideoTracks[remoteUid] = videoTrack
-                        videoMutedStates[remoteUid]?.let { muted -> videoTrack.setEnabled(!muted) }
+                        applyRemoteVideo(remoteUid)
                         val container = pendingRemoteContainers[remoteUid]?.get()
                         val viewId = videoViews[remoteUid]
                         android.os.Handler(android.os.Looper.getMainLooper()).post {
@@ -604,6 +687,9 @@ internal class RtcEngineImpl(
         remoteSdpSetByUid[remoteUid] = AtomicBoolean(false)
         pendingLocalIceByUid.computeIfAbsent(remoteUid) { mutableListOf() }
         pendingRemoteIceByUid.computeIfAbsent(remoteUid) { mutableListOf() }
+        if (shouldInitiateOffer(currentUid, remoteUid)) {
+            ensureOutgoingDataChannels(remoteUid)
+        }
         return pc
     }
     
@@ -657,8 +743,8 @@ internal class RtcEngineImpl(
         Log.d(TAG, "设置客户端角色: $role canPublish=${role.canPublish()}")
         clientRole = role
         val publish = role.canPublish()
-        localAudioTrack?.setEnabled(publish)
-        localVideoTrack?.setEnabled(publish)
+        localAudioTrack?.setEnabled(publish && !localAudioMuted)
+        localVideoTrack?.setEnabled(publish && !localVideoMuted)
     }
 
     private var channelProfile: String = "communication"
@@ -677,13 +763,20 @@ internal class RtcEngineImpl(
         Log.d(TAG, "音量提示: interval=$interval, smooth=$smooth, reportVad=$reportVad")
         volumeIndicationRunnable?.let { volumeIndicationHandler?.removeCallbacks(it) }
         volumeIndicationInterval = interval
+        volumeSmooth = smooth.coerceAtLeast(1)
         if (interval <= 0) return
         val handler = android.os.Handler(android.os.Looper.getMainLooper())
         volumeIndicationHandler = handler
         val runnable = object : Runnable {
             override fun run() {
                 if (volumeIndicationInterval <= 0) return
-                val speakers = listOf(VolumeInfo(uid = "local", volume = 0))
+                smoothedLocalVolume = VolumeMeter.smooth(smoothedLocalVolume, localPcmVolume, volumeSmooth)
+                val speakers = mutableListOf(VolumeInfo(uid = "local", volume = smoothedLocalVolume))
+                remotePcmVolume.forEach { (uid, volume) ->
+                    val next = VolumeMeter.smooth(smoothedRemoteVolume[uid] ?: volume, volume, volumeSmooth)
+                    smoothedRemoteVolume[uid] = next
+                    speakers.add(VolumeInfo(uid, next))
+                }
                 eventHandler?.onVolumeIndication(speakers)
                 handler.postDelayed(this, volumeIndicationInterval.toLong())
             }
@@ -895,9 +988,11 @@ internal class RtcEngineImpl(
     fun setEnableSpeakerphone(enabled: Boolean) {
         isSpeakerphoneEnabled.set(enabled)
         audioManager?.let {
+            it.mode = AudioManager.MODE_IN_COMMUNICATION
             it.isSpeakerphoneOn = enabled
             Log.d(TAG, "扬声器状态: $enabled")
         }
+        publishAudioRoute()
     }
     
     fun setDefaultAudioRouteToSpeakerphone(enabled: Boolean) {
@@ -907,16 +1002,19 @@ internal class RtcEngineImpl(
             isSpeakerphoneEnabled.set(enabled)
             Log.d(TAG, "默认音频路由设置为扬声器: $enabled")
         }
+        publishAudioRoute()
     }
     
     fun isSpeakerphoneEnabled(): Boolean {
         return isSpeakerphoneEnabled.get()
     }
+
+    fun getAudioRoute(): Int = publishedAudioRoute
     
     // ==================== 音频控制 ====================
     
     fun enableLocalAudio(enabled: Boolean) {
-        localAudioTrack?.setEnabled(enabled)
+        localAudioTrack?.setEnabled(enabled && !localAudioMuted && clientRole.canPublish())
         Log.d(TAG, "启用/禁用本地音频: $enabled")
     }
     
@@ -930,31 +1028,59 @@ internal class RtcEngineImpl(
 
     fun muteLocalAudio(muted: Boolean) {
         try {
-            localAudioTrack?.setEnabled(!muted)
+            localAudioMuted = muted
+            localAudioTrack?.setEnabled(!muted && clientRole.canPublish())
+            eventHandler?.onLocalAudioStateChanged(if (muted) "muted" else "recording", "")
+            publishClientMute("audio", muted)
             Log.d(TAG, "本地音频静音: $muted")
         } catch (e: Exception) {
             Log.e(TAG, "设置本地音频静音状态失败", e)
         }
     }
+
+    fun isLocalAudioMuted(): Boolean = localAudioMuted
+
+    fun isLocalVideoMuted(): Boolean = localVideoMuted
+
+    fun isRemoteAudioMuted(uid: String): Boolean {
+        return allRemoteAudioMuted || remoteAudioMuted[uid] == true
+    }
+
+    fun isRemoteVideoMuted(uid: String): Boolean {
+        return allRemoteVideoMuted || videoMutedStates[uid] == true
+    }
     
     fun muteRemoteAudioStream(uid: String, muted: Boolean) {
+        remoteAudioMuted[uid] = muted
         userVolumes[uid] = if (muted) 0 else 100
+        applyRemoteAudio(uid)
         Log.d(TAG, "远端用户 $uid 音频静音: $muted")
     }
     
     fun muteAllRemoteAudioStreams(muted: Boolean) {
+        allRemoteAudioMuted = muted
         playbackVolume = if (muted) 0 else 100
+        remoteAudioTracks.keys.forEach { applyRemoteAudio(it) }
+        peerConnections.values.forEach { pc ->
+            try {
+                pc.setAudioPlayout(!muted)
+            } catch (e: Exception) {
+                Log.w(TAG, "setAudioPlayout 失败", e)
+            }
+        }
         Log.d(TAG, "所有远端音频静音: $muted")
     }
     
     fun adjustUserPlaybackSignalVolume(uid: String, volume: Int) {
         userVolumes[uid] = volume.coerceIn(0, 100)
+        applyRemoteAudio(uid)
         Log.d(TAG, "用户 $uid 音量调整为: $volume")
     }
     
     fun adjustPlaybackSignalVolume(volume: Int) {
         playbackVolume = volume.coerceIn(0, 100)
         audioTrack?.setVolume(playbackVolume / 100f)
+        remoteAudioTracks.keys.forEach { applyRemoteAudio(it) }
         Log.d(TAG, "播放音量调整为: $volume")
     }
     
@@ -1312,22 +1438,29 @@ internal class RtcEngineImpl(
                 
                 if (deviceNames.isNotEmpty()) {
                     val frontCameraName = deviceNames.find { cameraEnumerator.isFrontFacing(it) } ?: deviceNames[0]
-                    videoCapturer = cameraEnumerator.createCapturer(frontCameraName, null)
-                    
+                    usingFrontCamera = cameraEnumerator.isFrontFacing(frontCameraName)
+                    videoCapturer = cameraEnumerator.createCapturer(frontCameraName, null) as? CameraVideoCapturer
+                    val egl = eglBase?.eglBaseContext
                     val videoSource = peerConnectionFactory?.createVideoSource(false)
-                    videoCapturer?.initialize(
-                        SurfaceTextureHelper.create("CaptureThread", EglBase.create().eglBaseContext),
-                        context,
-                        videoSource?.capturerObserver
-                    )
-                    
-                    videoCapturer?.startCapture(
-                        currentVideoConfig?.width ?: 640,
-                        currentVideoConfig?.height ?: 480,
-                        currentVideoConfig?.frameRate ?: 30
-                    )
-                    
-                    localVideoTrack = peerConnectionFactory?.createVideoTrack("video_track", videoSource)
+                    if (videoSource != null) {
+                        localVideoSource = videoSource
+                        installFrameProcessor(videoSource)
+                    }
+                    if (egl != null && videoSource != null) {
+                        videoCapturer?.initialize(
+                            SurfaceTextureHelper.create("CaptureThread", egl),
+                            context,
+                            videoSource.capturerObserver
+                        )
+                        videoCapturer?.startCapture(
+                            currentVideoConfig?.width ?: 640,
+                            currentVideoConfig?.height ?: 480,
+                            currentVideoConfig?.frameRate ?: 30
+                        )
+                        val track = peerConnectionFactory?.createVideoTrack("video_track", videoSource)
+                        replaceLocalVideoTrack(track)
+                        if (localVideoMuted) track?.setEnabled(false)
+                    }
                     android.os.Handler(android.os.Looper.getMainLooper()).post {
                         bindLocalVideoToView(viewId)
                     }
@@ -1357,40 +1490,38 @@ internal class RtcEngineImpl(
             videoCapturer = null
             localVideoTrack?.dispose()
             localVideoTrack = null
+            if (!isScreenCapturing.get()) {
+                localVideoSource?.dispose()
+                localVideoSource = null
+            }
         } catch (e: Exception) {
             Log.e(TAG, "停止摄像头预览失败", e)
         }
     }
     
     fun muteLocalVideoStream(muted: Boolean) {
+        localVideoMuted = muted
         videoMutedStates["local"] = muted
+        localVideoTrack?.setEnabled(!muted && clientRole.canPublish())
+        eventHandler?.onLocalVideoStateChanged(if (muted) "muted" else "capturing", "")
+        publishClientMute("video", muted)
         Log.d(TAG, "本地视频静音: $muted")
-        
-        // 实际应用静音逻辑
-        if (muted) {
-            localVideoTrack?.setEnabled(false)
-        } else {
-            localVideoTrack?.setEnabled(true)
-        }
     }
     
     fun muteRemoteVideoStream(uid: String, muted: Boolean) {
         videoMutedStates[uid] = muted
+        applyRemoteVideo(uid)
+        eventHandler?.onRemoteVideoStateChanged(uid, if (muted) "muted" else "decoding", "local-mute", 0)
         Log.d(TAG, "远端用户 $uid 视频静音: $muted")
-        
-        // 实际应用静音逻辑
-        // videoRenderer.setMuted(uid, muted)
     }
     
     fun muteAllRemoteVideoStreams(muted: Boolean) {
-        // 更新所有远端用户的静音状态
-        videoViews.keys.filter { it != "local" }.forEach { uid ->
-            videoMutedStates[uid] = muted
+        allRemoteVideoMuted = muted
+        val uids = (videoViews.keys + remoteVideoTracks.keys).filter { it != "local" }
+        uids.forEach { uid ->
+            applyRemoteVideo(uid)
         }
         Log.d(TAG, "所有远端视频静音: $muted")
-        
-        // 实际应用静音逻辑
-        // videoRenderer.setAllMuted(muted)
     }
     
     fun setupLocalVideo(viewId: Int) {
@@ -1507,61 +1638,67 @@ internal class RtcEngineImpl(
     
     // ==================== 屏幕共享 ====================
     
-    fun startScreenCapture(config: ScreenCaptureConfiguration) {
+    fun setScreenCaptureIntent(permissionResult: Intent) {
+        screenCaptureIntent = permissionResult
+    }
+
+    fun startScreenCapture(permissionResult: Intent, config: ScreenCaptureConfiguration): Int {
+        screenCaptureIntent = permissionResult
+        return startScreenCapture(config)
+    }
+
+    fun startScreenCapture(config: ScreenCaptureConfiguration): Int {
         if (isScreenCapturing.get()) {
             Log.w(TAG, "屏幕共享已在进行中")
-            return
+            return -1
         }
-        
-        screenCaptureConfig = config
-        isScreenCapturing.set(true)
-        Log.d(TAG, "开始屏幕共享: ${config.width}x${config.height}, ${config.frameRate}fps")
-        
-        try {
-            // 使用MediaProjection API进行屏幕录制
-            val mediaProjectionManager = context.getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
-            
-            // 注意：MediaProjection需要用户授权，这里假设已经获得授权
-            // 实际使用时需要通过Activity的startActivityForResult获取MediaProjection
-            
-            // 创建VirtualDisplay进行屏幕录制
+        val intent = screenCaptureIntent
+        if (intent == null) {
+            Log.w(TAG, "屏幕共享缺少 MediaProjection 授权")
+            eventHandler?.onError(1006, "屏幕共享需要授权 Intent，请调用 startScreenCapture(intent, config)")
+            return -1
+        }
+        val factory = peerConnectionFactory
+        val egl = eglBase?.eglBaseContext
+        if (factory == null || egl == null) {
+            eventHandler?.onError(1006, "WebRTC 未就绪，无法共享屏幕")
+            return -1
+        }
+        return try {
+            stopCameraOnly()
             val displayMetrics = context.resources.displayMetrics
             val width = config.width.takeIf { it > 0 } ?: displayMetrics.widthPixels
             val height = config.height.takeIf { it > 0 } ?: displayMetrics.heightPixels
-            val density = displayMetrics.densityDpi
-            
-            // 创建Surface用于接收屏幕内容
-            val surfaceTexture = SurfaceTexture(0)
-            surfaceTexture.setDefaultBufferSize(width, height)
-            screenCaptureSurface = Surface(surfaceTexture)
-            
-            // 创建VideoSource用于屏幕共享
-            screenVideoSource = peerConnectionFactory?.createVideoSource(false)
-            
-            // 创建VirtualDisplay
-            // 注意：MediaProjection需要通过Activity获取，这里提供完整实现框架
-            // 实际使用时，MediaProjection应该从外部传入（通过setMediaProjection方法）
-            if (mediaProjection != null && screenCaptureSurface != null && screenVideoSource != null) {
-                virtualDisplay = mediaProjection!!.createVirtualDisplay(
-                    "ScreenCapture",
-                    width, height, density,
-                    android.hardware.display.DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR,
-                    screenCaptureSurface,
-                    null, null
-                )
-                
-                // 使用屏幕内容创建视频轨道
-                localVideoTrack = peerConnectionFactory?.createVideoTrack("screen_track", screenVideoSource)
-                
-                Log.d(TAG, "VirtualDisplay已创建: ${width}x${height}")
-            } else {
-                Log.w(TAG, "MediaProjection未设置，无法创建VirtualDisplay。请先调用setMediaProjection()")
-            }
-            
-            Log.d(TAG, "屏幕录制已启动")
+            val fps = config.frameRate.takeIf { it > 0 } ?: 15
+            val capturer = ScreenCapturerAndroid(intent, object : MediaProjection.Callback() {
+                override fun onStop() {
+                    mainHandler.post { stopScreenCapture() }
+                }
+            })
+            val source = factory.createVideoSource(true)
+            source.setIsScreencast(true)
+            localVideoSource = source
+            screenVideoSource = source
+            installFrameProcessor(source)
+            capturer.initialize(
+                SurfaceTextureHelper.create("ScreenCapture", egl),
+                context,
+                source.capturerObserver
+            )
+            capturer.startCapture(width, height, fps)
+            screenCapturer = capturer
+            val track = factory.createVideoTrack("screen_track", source)
+            replaceLocalVideoTrack(track)
+            screenCaptureConfig = config
+            isScreenCapturing.set(true)
+            eventHandler?.onLocalVideoStateChanged("screen_capturing", "")
+            Log.d(TAG, "屏幕共享已启动: ${width}x${height} @${fps}fps")
+            0
         } catch (e: Exception) {
             Log.e(TAG, "启动屏幕共享失败", e)
             isScreenCapturing.set(false)
+            eventHandler?.onError(1006, e.message ?: "startScreenCapture failed")
+            -1
         }
     }
     
@@ -1575,19 +1712,19 @@ internal class RtcEngineImpl(
         Log.d(TAG, "停止屏幕共享")
         
         try {
-            // 停止VirtualDisplay
+            screenCapturer?.stopCapture()
+            screenCapturer?.dispose()
+            screenCapturer = null
             virtualDisplay?.release()
             virtualDisplay = null
-            
-            // 释放Surface
             screenCaptureSurface?.release()
             screenCaptureSurface = null
-            
-            // 停止MediaProjection
             mediaProjection?.stop()
             mediaProjection = null
-            
+            screenVideoSource?.dispose()
+            screenVideoSource = null
             screenCaptureConfig = null
+            eventHandler?.onLocalVideoStateChanged("stopped", "")
             Log.d(TAG, "屏幕录制已停止")
         } catch (e: Exception) {
             Log.e(TAG, "停止屏幕共享失败", e)
@@ -1602,28 +1739,12 @@ internal class RtcEngineImpl(
         
         screenCaptureConfig = config
         Log.d(TAG, "更新屏幕共享配置: ${config.width}x${config.height}, ${config.frameRate}fps")
-        
         try {
-            // 重新创建VirtualDisplay以应用新配置
-            virtualDisplay?.release()
-            
             val displayMetrics = context.resources.displayMetrics
             val width = config.width.takeIf { it > 0 } ?: displayMetrics.widthPixels
             val height = config.height.takeIf { it > 0 } ?: displayMetrics.heightPixels
-            val density = displayMetrics.densityDpi
-            
-            // 重新创建VirtualDisplay以应用新配置
-            if (mediaProjection != null && screenCaptureSurface != null) {
-                virtualDisplay = mediaProjection!!.createVirtualDisplay(
-                    "ScreenCapture",
-                    width, height, density,
-                    android.hardware.display.DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR,
-                    screenCaptureSurface,
-                    null, null
-                )
-                Log.d(TAG, "VirtualDisplay已重新创建: ${width}x${height}")
-            }
-            
+            val fps = config.frameRate.takeIf { it > 0 } ?: 15
+            screenCapturer?.changeCaptureFormat(width, height, fps)
             Log.d(TAG, "屏幕共享配置已更新")
         } catch (e: Exception) {
             Log.e(TAG, "更新屏幕共享配置失败", e)
@@ -1634,39 +1755,75 @@ internal class RtcEngineImpl(
     
     fun setBeautyEffectOptions(options: BeautyOptions) {
         beautyOptions = options
-        Log.d(TAG, "设置美颜选项: enabled=${options.enabled}, lightening=${options.lighteningLevel}, smoothness=${options.smoothnessLevel}")
-        
-        try {
-            // 应用美颜效果
-            if (options.enabled) {
-                // 创建或更新美颜滤镜
-                if (beautyFilter == null) {
-                    beautyFilter = BeautyFilter()
-                }
-                beautyFilter?.setLighteningLevel(options.lighteningLevel.toFloat())
-                beautyFilter?.setSmoothnessLevel(options.smoothnessLevel.toFloat())
-                beautyFilter?.setRednessLevel(options.rednessLevel.toFloat())
-                beautyFilter?.enable()
-                
-                // 将美颜滤镜应用到视频轨道
-                localVideoTrack?.let { track ->
-                    // 创建美颜VideoSink
-                    val beautySink = BeautyVideoSink(beautyFilter!!) { filteredFrame: VideoFrame ->
-                        // 将处理后的帧重新注入到视频轨道
-                        // 实际实现需要替换原始帧
-                    }
-                    track.addSink(beautySink)
-                }
-                
-                Log.d(TAG, "美颜效果已启用")
-            } else {
-                beautyFilter?.disable()
-                beautyFilter = null
-                Log.d(TAG, "美颜效果已禁用")
-            }
-        } catch (e: Exception) {
-            Log.e(TAG, "设置美颜效果失败", e)
+        Log.d(TAG, "设置美颜选项: enabled=${options.enabled}, lightening=${options.lighteningLevel}")
+        localVideoSource?.let { installFrameProcessor(it) }
+    }
+
+    fun setVideoFrameProcessor(processor: VideoFrameProcessor?) {
+        videoFrameProcessor = processor
+        localVideoSource?.let { installFrameProcessor(it) }
+    }
+
+    fun enableCustomVideoCapture(enabled: Boolean): Int {
+        val factory = peerConnectionFactory ?: return -1
+        if (!enabled) {
+            customVideoCapture = false
+            return 0
         }
+        return try {
+            stopCameraOnly()
+            val source = factory.createVideoSource(false)
+            localVideoSource = source
+            installFrameProcessor(source)
+            val track = factory.createVideoTrack("custom_video", source)
+            replaceLocalVideoTrack(track)
+            customVideoCapture = true
+            eventHandler?.onLocalVideoStateChanged("custom_capture", "")
+            0
+        } catch (e: Exception) {
+            Log.e(TAG, "开启自定义采集失败", e)
+            -1
+        }
+    }
+
+    fun pushExternalVideoFrame(frame: VideoFrame): Int {
+        if (!customVideoCapture) return -1
+        val source = localVideoSource ?: return -1
+        return try {
+            source.capturerObserver.onFrameCaptured(frame)
+            0
+        } catch (e: Exception) {
+            Log.e(TAG, "推送外部视频帧失败", e)
+            -1
+        }
+    }
+
+    fun switchCamera(): Int {
+        if (customVideoCapture || isScreenCapturing.get()) return -1
+        val capturer = videoCapturer ?: return -1
+        return try {
+            capturer.switchCamera(object : CameraVideoCapturer.CameraSwitchHandler {
+                override fun onCameraSwitchDone(isFrontCamera: Boolean) {
+                    usingFrontCamera = isFrontCamera
+                    eventHandler?.onLocalVideoStateChanged(if (isFrontCamera) "front_camera" else "back_camera", "")
+                }
+                override fun onCameraSwitchError(errorDescription: String?) {
+                    eventHandler?.onError(1005, errorDescription ?: "switchCamera failed")
+                }
+            })
+            0
+        } catch (e: Exception) {
+            Log.e(TAG, "切换摄像头失败", e)
+            eventHandler?.onError(1005, e.message ?: "switchCamera failed")
+            -1
+        }
+    }
+
+    fun setStreamExtraInfo(extra: String): Int {
+        streamExtraInfo = extra
+        if (!isJoined.get()) return -1
+        signalingClient?.sendChannelMessage(StreamExtra.encode(currentUid ?: "", extra))
+        return 0
     }
     
     fun takeSnapshot(uid: String, filePath: String) {
@@ -2046,83 +2203,38 @@ internal class RtcEngineImpl(
     
     // ==================== 网络质量 ====================
     
-    fun getNetworkQuality(): NetworkQuality {
-        // 不同 WebRTC 包的 getStats API（report 类型与遍历方式）差异很大，容易导致编译/运行不一致。
-        // 这里先提供可用的占位实现；如需真实网络质量，后续再按具体 WebRTC 包的 stats 结构实现。
-        return NetworkQuality(0, 0, 0, 0)
-    }
+    fun getNetworkQuality(): NetworkQuality = lastNetwork
     
     // ==================== 数据流 ====================
     
     fun createDataStream(reliable: Boolean, ordered: Boolean): Int {
-        val streamId = dataStreams.size + 1
-        
-        try {
-            // 创建DataChannel配置
-            val init = DataChannel.Init()
-            init.ordered = ordered
-            // 不同 WebRTC 包的 DataChannel.Init 字段不完全一致，这里只保证 ordered 生效
-            
-            // 从PeerConnection创建DataChannel
-            // 查找或创建默认PeerConnection
-            val defaultPeerConnection = peerConnections.values.firstOrNull() 
-                ?: createDefaultPeerConnection()
-            
-            if (defaultPeerConnection != null) {
-                val dataChannel = defaultPeerConnection.createDataChannel("data_channel_$streamId", init)
-                dataChannelMap[streamId] = dataChannel
-                
-                // 设置DataChannel回调
-                val currentStreamId = streamId
-                dataChannel.registerObserver(object : DataChannel.Observer {
-                    override fun onBufferedAmountChange(previousAmount: Long) {}
-                    override fun onStateChange() {
-                        Log.d(TAG, "DataChannel状态变化: ${dataChannel.state()}")
-                    }
-                    override fun onMessage(buffer: DataChannel.Buffer) {
-                        val bytes = ByteArray(buffer.data.remaining())
-                        buffer.data.get(bytes)
-                        val remoteUid = guessRemoteUid()
-                        Log.d(TAG, "收到DataChannel消息: ${bytes.size} bytes, streamId=$currentStreamId, uid=$remoteUid")
-                        eventHandler?.onStreamMessage(remoteUid, currentStreamId, bytes)
-                    }
-                })
-            }
-            
-            dataStreams[streamId] = true
-            Log.d(TAG, "创建数据流: streamId=$streamId, reliable=$reliable, ordered=$ordered")
-            
-            return streamId
-        } catch (e: Exception) {
-            Log.e(TAG, "创建数据流失败", e)
-            return -1
+        val streamId = nextStreamId.incrementAndGet()
+        streamSpecs[streamId] = StreamSpec(reliable, ordered)
+        dataStreams[streamId] = true
+        peerConnections.keys.filter { it != "default" }.forEach { uid ->
+            val created = ensureOutgoingDataChannels(uid)
+            val negotiated = offerSentByUid[uid]?.get() == true || remoteSdpSetByUid[uid]?.get() == true
+            if (created && negotiated) renegotiate(uid)
         }
+        Log.d(TAG, "创建数据流: streamId=$streamId, reliable=$reliable, ordered=$ordered")
+        return streamId
     }
     
     fun sendStreamMessage(streamId: Int, data: ByteArray) {
-        if (!dataStreams.containsKey(streamId)) {
-            Log.e(TAG, "数据流不存在: streamId=$streamId")
-            return
-        }
-        
-        try {
-            val dataChannel = dataChannelMap[streamId]
-            if (dataChannel != null && dataChannel.state() == DataChannel.State.OPEN) {
-                val buffer = DataChannel.Buffer(java.nio.ByteBuffer.wrap(data), false)
-                dataChannel.send(buffer)
-                Log.d(TAG, "数据流消息已发送: streamId=$streamId, size=${data.size} bytes")
-            } else {
-                Log.w(TAG, "数据流未打开: streamId=$streamId")
-            }
-        } catch (e: Exception) {
-            Log.e(TAG, "发送数据流消息失败", e)
-        }
+        sendOnDataChannels(streamId, data, binary = false)
+    }
+
+    fun sendSei(streamId: Int, data: ByteArray): Int {
+        return sendOnDataChannels(streamId, DataFrame.wrapSei(data), binary = true)
     }
     
     
     // ==================== 清理 ====================
     
     fun release() {
+        stopStatsPoll()
+        volumeIndicationRunnable?.let { volumeIndicationHandler?.removeCallbacks(it) }
+        signalingRetry?.let { mainHandler.removeCallbacks(it) }
         // 停止音频混音
         stopAudioMixing()
         
@@ -2164,6 +2276,8 @@ internal class RtcEngineImpl(
         // 释放数据流资源
         dataChannelMap.values.forEach { it.close() }
         dataChannelMap.clear()
+        dataChannels.values.forEach { map -> map.values.forEach { it.close() } }
+        dataChannels.clear()
         
         // 释放远端视频轨道与渲染器
         remoteVideoTracks.values.forEach { it.dispose() }
@@ -2195,8 +2309,447 @@ internal class RtcEngineImpl(
         Log.d(TAG, "所有资源已释放")
     }
     
+    // ==================== 端上能力 ====================
+
+    private fun handleSignalingFailure() {
+        if (!isJoined.get()) return
+        if (!signalingRetryPosted.compareAndSet(false, true)) return
+        val decision = reconnectTracker.onTransportLost()
+        eventHandler?.onConnectionStateChanged(decision.state, "signaling")
+        if (!decision.shouldRetry) {
+            signalingRetryPosted.set(false)
+            eventHandler?.onError(1003, "信令连接失败")
+            return
+        }
+        val delayMs = 1000L * reconnectTracker.attemptCount().coerceAtLeast(1)
+        val task = Runnable {
+            signalingRetryPosted.set(false)
+            if (isJoined.get()) signalingClient?.connect()
+        }
+        signalingRetry = task
+        mainHandler.postDelayed(task, delayMs)
+    }
+
+    private fun handleIceLost(remoteUid: String) {
+        if (!isJoined.get()) return
+        if (!iceRecoveryPending.compareAndSet(false, true)) {
+            try {
+                peerConnections[remoteUid]?.restartIce()
+            } catch (e: Exception) {
+                Log.w(TAG, "restartIce 失败", e)
+            }
+            return
+        }
+        val decision = reconnectTracker.onTransportLost()
+        eventHandler?.onConnectionStateChanged(decision.state, "ice")
+        if (!decision.shouldRetry) return
+        peerConnections.values.forEach { pc ->
+            try {
+                pc.restartIce()
+            } catch (e: Exception) {
+                Log.w(TAG, "restartIce 失败", e)
+            }
+        }
+    }
+
+    private fun handleIceRecovered(@Suppress("UNUSED_PARAMETER") remoteUid: String) {
+        iceRecoveryPending.set(false)
+        val elapsed = (System.currentTimeMillis() - joinStartTime).toInt().coerceAtLeast(0)
+        when (reconnectTracker.onConnected()) {
+            RejoinSignal.REJOINED -> {
+                eventHandler?.onRejoinChannelSuccess(currentChannelId ?: "", currentUid ?: "", elapsed)
+                eventHandler?.onConnectionStateChanged("connected", "rejoined")
+            }
+            RejoinSignal.JOINED -> eventHandler?.onConnectionStateChanged("connected", "ice")
+            RejoinSignal.NONE -> {}
+        }
+    }
+
+    private fun publishAudioRoute() {
+        val (wired, bluetooth) = playbackRouteFlags()
+        val route = AudioRoute.resolve(isSpeakerphoneEnabled.get(), wired, bluetooth)
+        if (route == publishedAudioRoute) return
+        publishedAudioRoute = route
+        eventHandler?.onAudioRoutingChanged(route)
+    }
+
+    private fun playbackRouteFlags(): Pair<Boolean, Boolean> {
+        val am = audioManager ?: return false to false
+        var wired = am.isWiredHeadsetOn
+        var bluetooth = am.isBluetoothScoOn || am.isBluetoothA2dpOn
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.M) {
+            am.getDevices(AudioManager.GET_DEVICES_OUTPUTS).forEach { device ->
+                when (device.type) {
+                    AndroidAudioDeviceInfo.TYPE_WIRED_HEADSET,
+                    AndroidAudioDeviceInfo.TYPE_WIRED_HEADPHONES,
+                    AndroidAudioDeviceInfo.TYPE_USB_HEADSET -> wired = true
+                    AndroidAudioDeviceInfo.TYPE_BLUETOOTH_SCO,
+                    AndroidAudioDeviceInfo.TYPE_BLUETOOTH_A2DP -> bluetooth = true
+                }
+            }
+        }
+        return wired to bluetooth
+    }
+
+    private fun publishClientMute(media: String, muted: Boolean) {
+        if (!isJoined.get()) return
+        signalingClient?.sendChannelMessage(ClientMuteNotice.encode(currentUid ?: "", media, muted))
+    }
+
+    private fun dispatchClientEnvelope(fromUid: String, message: String) {
+        StreamExtra.decode(message)?.let { payload ->
+            eventHandler?.onStreamExtraInfoUpdated(payload.uid.ifBlank { fromUid }, payload.extra)
+        }
+        ClientMuteNotice.decode(message)?.let { payload ->
+            val uid = payload.uid.ifBlank { fromUid }
+            if (payload.media == "audio") {
+                eventHandler?.onUserMuteAudio(uid, payload.muted)
+                eventHandler?.onRemoteAudioStateChanged(
+                    uid,
+                    if (payload.muted) "muted" else "decoding",
+                    "remote-mute",
+                    0
+                )
+            } else if (payload.media == "video") {
+                eventHandler?.onRemoteVideoStateChanged(
+                    uid,
+                    if (payload.muted) "muted" else "decoding",
+                    "remote-mute",
+                    0
+                )
+            }
+        }
+    }
+
+    private fun applyRemoteAudio(uid: String) {
+        val track = remoteAudioTracks[uid] ?: return
+        val muted = allRemoteAudioMuted || remoteAudioMuted[uid] == true
+        track.setEnabled(!muted)
+        val volume = if (muted) 0 else (userVolumes[uid] ?: playbackVolume).coerceIn(0, 100)
+        try {
+            track.setVolume(volume / 100.0)
+        } catch (e: Exception) {
+            Log.w(TAG, "设置远端音量失败", e)
+        }
+    }
+
+    private fun applyRemoteVideo(uid: String) {
+        val track = remoteVideoTracks[uid] ?: return
+        val muted = allRemoteVideoMuted || videoMutedStates[uid] == true
+        track.setEnabled(!muted)
+    }
+
+    private fun attachLocalVolumeSink() {
+        val track = localAudioTrack ?: return
+        val sink = AudioTrackSink { buffer, bits, _, channels, frames, _ ->
+            val bytes = copyPcm16(buffer, bits, channels, frames) ?: return@AudioTrackSink
+            localPcmVolume = VolumeMeter.pcm16LeRms(bytes)
+            localPcmSeen = true
+        }
+        try {
+            track.addSink(sink)
+        } catch (e: Exception) {
+            Log.w(TAG, "本地音量采集失败", e)
+        }
+    }
+
+    private fun attachRemoteVolumeSink(uid: String, track: org.webrtc.AudioTrack) {
+        val sink = AudioTrackSink { buffer, bits, _, channels, frames, _ ->
+            val bytes = copyPcm16(buffer, bits, channels, frames) ?: return@AudioTrackSink
+            remotePcmVolume[uid] = VolumeMeter.pcm16LeRms(bytes)
+            remotePcmSeen.add(uid)
+        }
+        try {
+            track.addSink(sink)
+        } catch (e: Exception) {
+            Log.w(TAG, "远端音量采集失败", e)
+        }
+    }
+
+    private fun copyPcm16(buffer: java.nio.ByteBuffer, bits: Int, channels: Int, frames: Int): ByteArray? {
+        if (bits != 16 || frames <= 0 || channels <= 0) return null
+        val size = bits / 8 * channels * frames
+        val duplicate = buffer.duplicate()
+        if (duplicate.remaining() < size) return null
+        val out = ByteArray(size)
+        duplicate.get(out)
+        return out
+    }
+
+    private fun replaceLocalVideoTrack(track: org.webrtc.VideoTrack?) {
+        val previous = localVideoTrack
+        localVideoTrack = track
+        if (track == null) return
+        peerConnections.values.forEach { pc ->
+            val sender = pc.senders.firstOrNull { sender ->
+                sender.track()?.kind() == "video" || (previous != null && sender.track() == previous)
+            }
+            if (sender != null) sender.setTrack(track, false) else pc.addTrack(track, listOf())
+        }
+        if (previous != null && previous !== track) {
+            try {
+                previous.dispose()
+            } catch (_: Exception) {
+            }
+        }
+    }
+
+    private fun stopCameraOnly() {
+        try {
+            videoCapturer?.stopCapture()
+            videoCapturer?.dispose()
+        } catch (e: Exception) {
+            Log.w(TAG, "停止摄像头失败", e)
+        }
+        videoCapturer = null
+        isPreviewing.set(false)
+    }
+
+    private fun installFrameProcessor(source: VideoSource) {
+        val processor = frameProcessor ?: LocalVideoProcessor().also { frameProcessor = it }
+        source.setVideoProcessor(processor)
+    }
+
+    private fun lightenFrame(frame: VideoFrame, level: Float): VideoFrame {
+        if (level <= 0f) return frame
+        val i420 = try {
+            frame.buffer.toI420()
+        } catch (e: Exception) {
+            Log.w(TAG, "读取 I420 失败", e)
+            null
+        } ?: return frame
+        return try {
+            val width = i420.width
+            val height = i420.height
+            val yBytes = readPlane(i420.dataY, i420.strideY, width, height)
+            val lit = BeautyMath.applyLightening(yBytes, level)
+            val out = JavaI420Buffer.allocate(width, height)
+            writePlane(lit, width, out.dataY, out.strideY, width, height)
+            val chromaWidth = (width + 1) / 2
+            val chromaHeight = (height + 1) / 2
+            copyPlane(i420.dataU, i420.strideU, out.dataU, out.strideU, chromaWidth, chromaHeight)
+            copyPlane(i420.dataV, i420.strideV, out.dataV, out.strideV, chromaWidth, chromaHeight)
+            VideoFrame(out, frame.rotation, frame.timestampNs)
+        } catch (e: Exception) {
+            Log.w(TAG, "提亮帧失败，保持原帧", e)
+            frame
+        } finally {
+            i420.release()
+        }
+    }
+
+    private fun readPlane(buffer: java.nio.ByteBuffer, stride: Int, width: Int, height: Int): ByteArray {
+        val out = ByteArray(width * height)
+        val duplicate = buffer.duplicate()
+        for (row in 0 until height) {
+            duplicate.position(row * stride)
+            duplicate.get(out, row * width, width)
+        }
+        return out
+    }
+
+    private fun writePlane(
+        bytes: ByteArray,
+        rowWidth: Int,
+        buffer: java.nio.ByteBuffer,
+        stride: Int,
+        width: Int,
+        height: Int
+    ) {
+        for (row in 0 until height) {
+            buffer.position(row * stride)
+            buffer.put(bytes, row * rowWidth, width)
+        }
+    }
+
+    private fun copyPlane(
+        src: java.nio.ByteBuffer,
+        srcStride: Int,
+        dst: java.nio.ByteBuffer,
+        dstStride: Int,
+        width: Int,
+        height: Int
+    ) {
+        val row = ByteArray(width)
+        val duplicate = src.duplicate()
+        for (y in 0 until height) {
+            duplicate.position(y * srcStride)
+            duplicate.get(row, 0, width)
+            dst.position(y * dstStride)
+            dst.put(row, 0, width)
+        }
+    }
+
+    private fun startStatsPoll() {
+        stopStatsPoll()
+        val task = object : Runnable {
+            override fun run() {
+                if (!isJoined.get()) return
+                val peers = peerConnections.filterKeys { it != "default" }
+                if (peers.isEmpty()) {
+                    eventHandler?.onNetworkQuality(
+                        "",
+                        NetworkQualityEstimator.UNKNOWN,
+                        NetworkQualityEstimator.UNKNOWN
+                    )
+                }
+                peers.forEach { (uid, pc) ->
+                    try {
+                        pc.getStats { report -> handleStatsReport(uid, report) }
+                    } catch (e: Exception) {
+                        Log.w(TAG, "getStats 失败", e)
+                    }
+                }
+                mainHandler.postDelayed(this, 2000)
+            }
+        }
+        statsRunnable = task
+        mainHandler.postDelayed(task, 2000)
+    }
+
+    private fun stopStatsPoll() {
+        statsRunnable?.let { mainHandler.removeCallbacks(it) }
+        statsRunnable = null
+        lastBytesSent.clear()
+        lastBytesRecv.clear()
+        lastStatsMs.clear()
+    }
+
+    private fun handleStatsReport(uid: String, report: RTCStatsReport) {
+        val records = report.statsMap.values.map { stat -> StatRecord(stat.type, stat.members) }
+        val sample = StatsParser.parse(records)
+        val now = System.currentTimeMillis()
+        val tx = Bitrate.bps(lastBytesSent[uid], lastStatsMs[uid], sample.bytesSent, now)
+        val rx = Bitrate.bps(lastBytesRecv[uid], lastStatsMs[uid], sample.bytesReceived, now)
+        sample.bytesSent?.let { lastBytesSent[uid] = it }
+        sample.bytesReceived?.let { lastBytesRecv[uid] = it }
+        lastStatsMs[uid] = now
+        val quality = NetworkQualityEstimator.fromRttAndLoss(sample.rttMs, sample.lossPercent)
+        val rank = NetworkQualityEstimator.toRank(quality)
+        lastNetwork = NetworkQuality(rank, rank, (tx ?: 0L).coerceAtMost(Int.MAX_VALUE.toLong()).toInt(), (rx ?: 0L).coerceAtMost(Int.MAX_VALUE.toLong()).toInt())
+        if (!remotePcmSeen.contains(uid)) {
+            sample.audioLevel?.let { remotePcmVolume[uid] = VolumeMeter.fromUnitInterval(it) }
+        }
+        mainHandler.post {
+            if (!isJoined.get()) return@post
+            eventHandler?.onNetworkQuality(uid, quality, quality)
+            eventHandler?.onNetworkQuality("", quality, quality)
+            val stats = linkedMapOf<String, Any?>("uid" to uid, "quality" to quality)
+            sample.rttMs?.let { stats["rttMs"] = it }
+            sample.lossPercent?.let { stats["lossPercent"] = it }
+            tx?.let { stats["txBitrate"] = it }
+            rx?.let { stats["rxBitrate"] = it }
+            if (stats.size > 2) eventHandler?.onRtcStats(stats)
+        }
+    }
+
+    private fun renegotiate(remoteUid: String) {
+        val channelId = currentChannelId ?: return
+        offerSentByUid.computeIfAbsent(remoteUid) { AtomicBoolean(false) }.set(false)
+        startOffer(remoteUid, channelId)
+    }
+
+    private fun ensureOutgoingDataChannels(remoteUid: String): Boolean {
+        val pc = peerConnections[remoteUid] ?: return false
+        var created = false
+        streamSpecs.forEach { (streamId, spec) ->
+            val perUid = dataChannels.computeIfAbsent(streamId) { ConcurrentHashMap() }
+            if (perUid.containsKey(remoteUid)) return@forEach
+            val init = DataChannel.Init().apply {
+                ordered = spec.ordered
+                if (!spec.reliable) maxRetransmits = 0
+            }
+            val channel = try {
+                pc.createDataChannel("sy-$streamId", init)
+            } catch (e: Exception) {
+                Log.w(TAG, "createDataChannel 失败", e)
+                null
+            } ?: return@forEach
+            perUid[remoteUid] = channel
+            dataChannelMap[streamId] = channel
+            watchDataChannel(channel, remoteUid, streamId)
+            created = true
+        }
+        return created
+    }
+
+    private fun acceptIncomingDataChannel(remoteUid: String, channel: DataChannel?) {
+        val incoming = channel ?: return
+        val streamId = DataFrame.streamIdFromLabel(incoming.label()) ?: return
+        watchDataChannel(incoming, remoteUid, streamId)
+        dataChannels.computeIfAbsent(streamId) { ConcurrentHashMap() }.putIfAbsent(remoteUid, incoming)
+        dataStreams.putIfAbsent(streamId, true)
+    }
+
+    private fun watchDataChannel(channel: DataChannel, remoteUid: String, streamId: Int) {
+        channel.registerObserver(object : DataChannel.Observer {
+            override fun onBufferedAmountChange(previousAmount: Long) {}
+            override fun onStateChange() {
+                Log.d(TAG, "DataChannel ${channel.label()} ${channel.state()} uid=$remoteUid")
+            }
+            override fun onMessage(buffer: DataChannel.Buffer) {
+                val bytes = ByteArray(buffer.data.remaining())
+                buffer.data.get(bytes)
+                val sei = DataFrame.unwrapSei(bytes)
+                mainHandler.post {
+                    eventHandler?.onStreamMessage(remoteUid, streamId, bytes)
+                    if (sei != null) eventHandler?.onSeiMessage(remoteUid, streamId, sei)
+                }
+            }
+        })
+    }
+
+    private fun sendOnDataChannels(streamId: Int, data: ByteArray, binary: Boolean): Int {
+        if (!dataStreams.containsKey(streamId) && dataChannels[streamId].isNullOrEmpty()) {
+            eventHandler?.onStreamMessageError("", streamId, 1, 0, 0)
+            return -1
+        }
+        val open = dataChannels[streamId]?.values?.filter { it.state() == DataChannel.State.OPEN }.orEmpty()
+        if (open.isEmpty()) {
+            eventHandler?.onStreamMessageError("", streamId, 2, 0, 0)
+            return -1
+        }
+        return try {
+            open.forEach { channel ->
+                channel.send(DataChannel.Buffer(java.nio.ByteBuffer.wrap(data), binary))
+            }
+            0
+        } catch (e: Exception) {
+            Log.e(TAG, "发送数据流消息失败", e)
+            eventHandler?.onStreamMessageError("", streamId, 3, 0, 0)
+            -1
+        }
+    }
+
+    private inner class LocalVideoProcessor : VideoProcessor {
+        @Volatile
+        private var downstream: VideoSink? = null
+
+        override fun onCapturerStarted(success: Boolean) {}
+
+        override fun onCapturerStopped() {}
+
+        override fun setSink(sink: VideoSink?) {
+            downstream = sink
+        }
+
+        override fun onFrameCaptured(frame: VideoFrame) {
+            val custom = videoFrameProcessor
+            val options = beautyOptions
+            val processed = when {
+                custom != null -> custom.onFrameCaptured(frame)
+                options?.enabled == true -> lightenFrame(frame, options.lighteningLevel.toFloat())
+                else -> frame
+            }
+            downstream?.onFrame(processed)
+            if (processed !== frame) processed.release()
+        }
+    }
+
     // ==================== 内部类 ====================
-    
+
+    private data class StreamSpec(val reliable: Boolean, val ordered: Boolean)
+
     private data class AudioEffectState(
         val config: AudioEffectConfiguration,
         val isPlaying: Boolean
