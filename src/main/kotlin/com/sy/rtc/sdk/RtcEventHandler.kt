@@ -81,9 +81,13 @@ open class RtcEventHandler {
     open fun onReconnectFailed(reason: String) {}
 
     /**
-     * 网络质量回调
+     * 网络质量，每 2 秒一轮，与 iOS 相同：
+     * 先回调一次本端 uid（`join` 时的 uid），质量为所有对端链路中最差的一档；
+     * 然后每个对端各一次（该对端链路的质量）。房间里没有对端时只回调本端 `unknown`。
      *
-     * @param uid 用户ID
+     * 目前 tx 与 rx 取同一个值（由该链路 RTT 和丢包算出，见 README「网络质量档位」）。
+     *
+     * @param uid 本端 uid 或对端 uid
      * @param txQuality 上行质量
      * @param rxQuality 下行质量
      */

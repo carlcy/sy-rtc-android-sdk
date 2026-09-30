@@ -78,6 +78,19 @@ object NetworkQualityEstimator {
         }
     }
 
+    /**
+     * 本端质量 = 所有对端链路中最差的一档（unknown 不参与，全部 unknown 时为 unknown）。
+     * 与 iOS `SyRtcNetworkQuality.worst` 相同。
+     */
+    fun worst(qualities: Collection<String>): String =
+        qualities.maxByOrNull { toRank(it) }?.takeIf { toRank(it) > 0 }?.let { normalize(it) } ?: UNKNOWN
+
+    private fun normalize(q: String): String = when (q) {
+        "medium" -> POOR
+        "die" -> DOWN
+        else -> q
+    }
+
     /** 0 unknown，1 excellent … 5 down。两端相同。 */
     fun toRank(quality: String): Int = when (quality) {
         EXCELLENT -> 1

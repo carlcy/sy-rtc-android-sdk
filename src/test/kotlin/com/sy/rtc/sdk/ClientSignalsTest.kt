@@ -197,4 +197,13 @@ class ClientSignalsTest {
         val brighter = BeautyMath.applyLightening(byteArrayOf(100), 1f)
         assertTrue((brighter[0].toInt() and 0xFF) > 100)
     }
+
+    @Test
+    fun localQualityIsWorstKnownRemote() {
+        assertEquals("unknown", NetworkQualityEstimator.worst(emptyList()))
+        assertEquals("unknown", NetworkQualityEstimator.worst(listOf("unknown", "unknown")))
+        assertEquals("good", NetworkQualityEstimator.worst(listOf("unknown", "good", "excellent")))
+        assertEquals("down", NetworkQualityEstimator.worst(listOf("poor", "down", "bad")))
+        assertEquals("poor", NetworkQualityEstimator.worst(listOf("medium", "good")))
+    }
 }

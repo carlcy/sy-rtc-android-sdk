@@ -2,6 +2,7 @@
 
 ## 未发布
 
+- `onNetworkQuality` 与 iOS 相同：每轮先本端 uid（所有对端最差一档），再逐个对端；不再用 uid `""`。新增 `NetworkQualityEstimator.worst`。
 - 新增 `RtcErrorCode`，三端取值统一（见 README「错误码」）。信令 `kicked` 帧带凭证码时 `onError` 报 4031 / 4032 / 4033，而不是 1004；信令 `error` 帧的 403 和凭证码原样透传。
 - 修复：信令错误的文本取自 `data.message`（服务端实际字段），此前一直显示「信令错误」。
 - 新增 Token 过期提醒：解析 Token 的 `expireAt`（兼容 JWT `exp`），过期前 30 秒回调 `onTokenPrivilegeWillExpire`，到期回调 `onRequestToken`。此前 Android 从不回调这两个方法。也处理 `token-will-expire` / `token-expired` 信令。

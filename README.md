@@ -267,6 +267,8 @@ RTT 和丢包各自落档，取较差的一档；没有样本时为 `unknown`。
 | `bad` | < 800 | < 20% |
 | `down` | ≥ 800 | ≥ 20% |
 
+**回调方式（与 iOS 相同）**：每 2 秒一轮，先 `onNetworkQuality(本端 uid, q, q)`，q 为所有对端链路中最差的一档（unknown 不计入）；再每个对端 `onNetworkQuality(对端 uid, q, q)`。没有对端时只回调本端 `unknown`。3.2.0 及之前 Android 按对端逐个回调，并且每次都再用 uid `""` 回调一次该对端的质量。tx / rx 目前相同。
+
 ### 屏幕共享前台服务
 
 Android 10（API 29）起，MediaProjection 必须运行在类型为 `mediaProjection` 的前台服务里（Android 14 起不满足会直接抛 `SecurityException`）。SDK 自带 `com.sy.rtc.sdk.ScreenCaptureService`，并在 SDK 的 manifest 中声明了服务与 `FOREGROUND_SERVICE`、`FOREGROUND_SERVICE_MEDIA_PROJECTION` 权限，manifest 合并后宿主 **不需要** 再声明。

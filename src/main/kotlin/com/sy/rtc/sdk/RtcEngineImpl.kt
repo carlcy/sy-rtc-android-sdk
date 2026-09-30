@@ -2801,16 +2801,34 @@ internal class RtcEngineImpl(
                 val peers = peerConnections.filterKeys { it != "default" }
                 if (peers.isEmpty()) {
                     eventHandler?.onNetworkQuality(
-                        "",
+                        currentUid ?: "",
                         NetworkQualityEstimator.UNKNOWN,
                         NetworkQualityEstimator.UNKNOWN
                     )
-                }
-                peers.forEach { (uid, pc) ->
-                    try {
-                        pc.getStats { report -> handleStatsReport(uid, report) }
-                    } catch (e: Exception) {
-                        Log.w(TAG, "getStats 失败", e)
+                } else {
+                    // 一轮收齐所有对端后再回调：本端 uid = 最差一档，然后逐个对端。与 iOS 相同。
+                    val pending = java.util.concurrent.atomic.AtomicInteger(peers.size)
+                    val round = ConcurrentHashMap<String, String>()
+                    val finishOne = {
+                        if (pending.decrementAndGet() == 0) {
+                            val snapshot = HashMap(round)
+                            mainHandler.post { emitNetworkQualityRound(snapshot) }
+                        }
+                    }
+                    peers.forEach { (uid, pc) ->
+                        try {
+                            pc.getStats { report ->
+                                try {
+                                    round[uid] = handleStatsReport(uid, report)
+                                } finally {
+                                    finishOne()
+                                }
+                            }
+                        } catch (e: Exception) {
+                            Log.w(TAG, "getStats 失败", e)
+                            round[uid] = NetworkQualityEstimator.UNKNOWN
+                            finishOne()
+                        }
                     }
                 }
                 mainHandler.postDelayed(this, 2000)
@@ -2828,7 +2846,15 @@ internal class RtcEngineImpl(
         lastStatsMs.clear()
     }
 
-    private fun handleStatsReport(uid: String, report: RTCStatsReport) {
+    private fun emitNetworkQualityRound(round: Map<String, String>) {
+        if (!isJoined.get()) return
+        val local = NetworkQualityEstimator.worst(round.values)
+        eventHandler?.onNetworkQuality(currentUid ?: "", local, local)
+        round.toSortedMap().forEach { (uid, q) -> eventHandler?.onNetworkQuality(uid, q, q) }
+    }
+
+    /** 解析一次对端统计，回调 onRtcStats，返回该链路质量档位。 */
+    private fun handleStatsReport(uid: String, report: RTCStatsReport): String {
         val records = report.statsMap.values.map { stat -> StatRecord(stat.type, stat.members) }
         val sample = StatsParser.parse(records)
         val now = System.currentTimeMillis()
@@ -2845,8 +2871,6 @@ internal class RtcEngineImpl(
         }
         mainHandler.post {
             if (!isJoined.get()) return@post
-            eventHandler?.onNetworkQuality(uid, quality, quality)
-            eventHandler?.onNetworkQuality("", quality, quality)
             val stats = linkedMapOf<String, Any?>("uid" to uid, "quality" to quality)
             sample.rttMs?.let { stats["rttMs"] = it }
             sample.lossPercent?.let {
@@ -2857,6 +2881,7 @@ internal class RtcEngineImpl(
             rx?.let { stats["rxBitrate"] = it }
             if (stats.size > 2) eventHandler?.onRtcStats(stats)
         }
+        return quality
     }
 
     private fun renegotiate(remoteUid: String) {
