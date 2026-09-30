@@ -1,20 +1,20 @@
-# Android SDK Demo
+# SY RTC Android 示例
 
-## 生产基址（2026-09-15）
+依赖与客户工程相同，写坐标和版本，不下载、不解压 AAR。
 
-- API: `http://47.105.48.196`
-- 信令: `ws://47.105.48.196/ws/signaling`（RTC；须 `?token=`）
-- 文档: `docs/SDK_RTC.md` / `docs/SDK_IM.md`
-- 下载: `http://47.105.48.196/downloads/`
+```gradle
+implementation 'com.github.carlcy:sy-rtc-android-sdk:v3.2.0'
+```
 
-本机调试仍可用 `10.0.2.2:8080`（Android 模拟器）或 `127.0.0.1`。
+版本在 `gradle.properties` 的 `sdkVersion`。仓库是 JitPack；本机若已执行过仓库根目录的 `./gradlew publishToMavenLocal`，会优先用这份本地包（坐标字符串不变）。
 
-
-对接 **rtc-backend-go :8080**。详细步骤见 **[README_EXAMPLE.md](./README_EXAMPLE.md)**。
-
-- 模拟器默认：`http://10.0.2.2:8080` / `ws://10.0.2.2:8080/ws/signaling`
-- 真机：换成电脑局域网 IP
+改 SDK 源码时，把 `useLocalSdk` 设为 `true`，示例会改为编译上级模块 `:sy-rtc-android-sdk`。
 
 ```bash
-cd example && ./gradlew :app:assembleDebug
+cd example
+./gradlew assemble
 ```
+
+界面流程：初始化 → 拉取 Token → 加入频道。Token 即将过期时会再拉一次并 `renewToken`。启用视频时调用 `setVideoQuality("sd")`。
+
+对接说明见 [README_EXAMPLE.md](./README_EXAMPLE.md)。

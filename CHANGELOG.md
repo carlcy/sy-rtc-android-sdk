@@ -1,5 +1,27 @@
 # SY RTC Android SDK 更新日志
 
+## 3.2.0
+
+### 接入
+
+- 客户依赖改为 JitPack 坐标：`implementation("com.github.carlcy:sy-rtc-android-sdk:v3.2.0")`。Demo 默认使用同一行，不再下载或解压 AAR。
+- `publish.gradle` 与 `VERSION` 对齐；无签名密钥时 `publishToMavenLocal` / JitPack 仍可构建。Maven Central 需 owner 配置 `io.github.carlcy` 与签名，见 `PUBLISH_GUIDE.md`。
+
+### 新增（不改变已有方法签名）
+
+- `RtcEngine.setVideoQuality(VideoQualityTier)` / `setVideoQuality("audio"|"sd"|"hd"|"fhd")` — 本地画质档位
+- `RoomService.switchQualityTier` — `POST /api/rtc/quality/switch`（用户 JWT）
+- `RoomService.renewToken` — `POST /api/rtc/token/renew`，参数与 `fetchToken` 相同
+- `RoomService.setRoomAttribute` / `getRoomAttributes` / `deleteRoomAttribute` — `POST /api/rtc/channel/meta/set|get|delete`（用户 JWT）
+- 拉 Token / 续期遇到业务码 4031（停用）、4032（吊销）、4033（过期）时，callback 收到 `RtcCredentialException`
+- `RoomInfo.currentSeats`、`RoomInfo.attrs`（缺省为空，旧构造仍可用）
+- `RtcEngine.VERSION = "3.2.0"`
+- 端上能力（不是 SFU）：`onNetworkQuality` 使用本机 RTT/丢包；`switchCamera`；`getAudioRoute` / `onAudioRoutingChanged`；`setVideoFrameProcessor` 与编码前提亮；`startScreenCapture(intent, config)`；本地/远端静音状态；PCM 音量提示；`setStreamExtraInfo`；`enableCustomVideoCapture` / `pushExternalVideoFrame`；ICE/信令重连与 `onRejoinChannelSuccess`；`sendSei`（DataChannel 前缀，不是码流 SEI）
+
+### 行为
+
+- `renewToken` 在已进房时用新 Token 重连信令（不发 leave，不拆 PeerConnection）
+
 ## 3.1.0
 
 ### 重大变更 / Breaking

@@ -29,7 +29,9 @@ data class RoomInfo(
     val status: String = "active",
     val onlineCount: Int = 0,
     val maxSeats: Int = 8,
-    val createTime: String? = null
+    val createTime: String? = null,
+    val currentSeats: Int = 0,
+    val attrs: Map<String, String> = emptyMap()
 ) {
     companion object {
         /**
@@ -46,7 +48,9 @@ data class RoomInfo(
                 status = json.optString("status", "active"),
                 onlineCount = onlineCount,
                 maxSeats = json.optInt("maxSeats", 8),
-                createTime = json.optString("createTime").takeIf { it.isNotEmpty() }
+                createTime = json.optString("createTime").takeIf { it.isNotEmpty() },
+                currentSeats = json.optInt("currentSeats", 0),
+                attrs = readAttrs(json)
             )
         }
     }
@@ -300,7 +304,10 @@ class RoomService(
     /**
      * 获取 RTC Token（别名 [getToken]）。
      *
+     * `POST /api/rtc/token`。鉴权与其它房间接口相同：`X-App-Id`，再加上用户 JWT 或 AppSecret。
      * 用于 [RtcEngine.join]；信令 WS 须带 ?token=。
+     *
+     * 业务码 4031 / 4032 / 4033 通过 callback 的异常返回，类型为 [RtcCredentialException]。
      *
      * @param role host|audience|publisher|subscriber（写入 Token privilege）
      * @param qualityTier audio|sd|hd|fhd
@@ -314,31 +321,27 @@ class RoomService(
         qualityTier: String? = null,
         meta: Boolean = false,
         callback: (String?, Exception?) -> Unit
-    ) {
-        runOnBackground({
-            val queryParams = mutableMapOf(
-                "channelId" to channelId,
-                "uid" to uid,
-                "expireHours" to expireHours.toString()
-            )
-            role?.takeIf { it.isNotBlank() }?.let { queryParams["role"] = it }
-            qualityTier?.takeIf { it.isNotBlank() }?.let { queryParams["qualityTier"] = it }
-            if (meta) queryParams["meta"] = "true"
-            val (_, respBody) = executeRequest("POST", "/api/rtc/token", queryParams = queryParams)
-            val json = JSONObject(respBody)
-            val respCode = json.optInt("code", -1)
-            if (respCode != 0) {
-                throw Exception(json.optString("msg", "获取 Token 失败"))
-            }
-            val data = json.opt("data")
-            when (data) {
-                is String -> data
-                is JSONObject -> if (meta) data.toString() else data.optString("token").ifBlank { data.toString() }
-                null -> throw Exception("Token 响应格式错误")
-                else -> data.toString()
-            }
-        }, callback)
-    }
+    ) = requestRtcToken(
+        "/api/rtc/token", channelId, uid, expireHours, role, qualityTier, meta, "获取 Token 失败", callback
+    )
+
+    /**
+     * 续期 RTC Token：`POST /api/rtc/token/renew`。
+     *
+     * 查询参数和鉴权与 [fetchToken] 相同。成功后把返回的字符串交给 [RtcEngine.renewToken]，不必先 leave。
+     * 4031 凭证停用、4032 吊销、4033 过期同样走 callback 的 [RtcCredentialException]。
+     */
+    fun renewToken(
+        channelId: String,
+        uid: String,
+        expireHours: Int = 24,
+        role: String? = null,
+        qualityTier: String? = null,
+        meta: Boolean = false,
+        callback: (String?, Exception?) -> Unit
+    ) = requestRtcToken(
+        "/api/rtc/token/renew", channelId, uid, expireHours, role, qualityTier, meta, "续期 Token 失败", callback
+    )
 
     /** [fetchToken] 别名，便于与文档 getToken 对齐。 */
     fun getToken(
@@ -350,6 +353,86 @@ class RoomService(
         meta: Boolean = false,
         callback: (String?, Exception?) -> Unit
     ) = fetchToken(channelId, uid, expireHours, role, qualityTier, meta, callback)
+
+    private fun requestRtcToken(
+        path: String,
+        channelId: String,
+        uid: String,
+        expireHours: Int,
+        role: String?,
+        qualityTier: String?,
+        meta: Boolean,
+        fallback: String,
+        callback: (String?, Exception?) -> Unit
+    ) {
+        runOnBackground({
+            val queryParams = mutableMapOf(
+                "channelId" to channelId,
+                "uid" to uid,
+                "expireHours" to expireHours.toString()
+            )
+            role?.takeIf { it.isNotBlank() }?.let { queryParams["role"] = it }
+            qualityTier?.takeIf { it.isNotBlank() }?.let { queryParams["qualityTier"] = it }
+            if (meta) queryParams["meta"] = "true"
+            val (http, respBody) = executeRequest("POST", path, queryParams = queryParams)
+            val json = try {
+                JSONObject(respBody)
+            } catch (e: Exception) {
+                throw Exception("$fallback: HTTP $http ${respBody.take(180)}", e)
+            }
+            val respCode = if (json.has("code")) json.optInt("code") else if (http !in 200..299) http else -1
+            if (respCode != 0) {
+                throw businessException(respCode, serverMessage(json), fallback)
+            }
+            val data = json.opt("data")
+            when (data) {
+                is String -> data
+                is JSONObject -> if (meta) data.toString() else data.optString("token").ifBlank { data.toString() }
+                null, JSONObject.NULL -> throw Exception("Token 响应格式错误")
+                else -> data.toString()
+            }
+        }, callback)
+    }
+
+    /**
+     * 切换控制面画质档位：`POST /api/rtc/quality/switch`。
+     *
+     * 只接受用户 JWT（先 [setAuthToken]）。`qualityTier` 为 audio|sd|hd|fhd。
+     * 成功且响应里带有新 RTC Token 时，callback 的第一个参数是该 Token，应再调用 [RtcEngine.renewToken]；
+     * 成功但没有新 Token 时两个参数都是 null。本地编码用 [RtcEngine.setVideoQuality]。
+     */
+    fun switchQualityTier(
+        channelId: String,
+        qualityTier: String,
+        uid: String? = null,
+        callback: (String?, Exception?) -> Unit
+    ) {
+        runOnBackground({
+            val queryParams = mutableMapOf(
+                "channelId" to channelId,
+                "qualityTier" to qualityTier
+            )
+            val bodyJson = JSONObject().apply {
+                put("channelId", channelId)
+                put("qualityTier", qualityTier)
+            }
+            if (!uid.isNullOrBlank()) {
+                queryParams["uid"] = uid
+                bodyJson.put("uid", uid)
+            }
+            val payload = postEnvelope(
+                "/api/rtc/quality/switch",
+                queryParams,
+                bodyJson.toString(),
+                "切换画质失败"
+            )
+            when (payload) {
+                is String -> payload.takeIf { it.isNotEmpty() }
+                is JSONObject -> payload.optString("token").takeIf { it.isNotEmpty() }
+                else -> null
+            }
+        }, callback)
+    }
 
     /**
      * 轮询单成员踢人/静音状态：GET /api/room/{channelId}/members/{uid}/state
@@ -392,6 +475,208 @@ class RoomService(
             }
             out
         }, callback)
+    }
+
+    /**
+     * 写入一个房间属性：`POST /api/rtc/channel/meta/set`。
+     *
+     * 需要用户 JWT（[setAuthToken]）。对应一个 key 和一条字符串 value。
+     */
+    fun setRoomAttribute(
+        channelId: String,
+        key: String,
+        value: String,
+        callback: (Boolean, Exception?) -> Unit
+    ) {
+        runOnBackground({
+            val query = mapOf("channelId" to channelId, "key" to key, "value" to value)
+            val body = JSONObject().apply {
+                put("channelId", channelId)
+                put("key", key)
+                put("value", value)
+            }.toString()
+            postEnvelope("/api/rtc/channel/meta/set", query, body, "设置房间属性失败")
+            true
+        }) { success, error ->
+            callback(success ?: false, error)
+        }
+    }
+
+    /**
+     * 读取房间属性：`POST /api/rtc/channel/meta/get`。
+     *
+     * 不传 [key] 时取整张表。需要用户 JWT（[setAuthToken]）。
+     */
+    fun getRoomAttributes(
+        channelId: String,
+        key: String? = null,
+        callback: (Map<String, String>?, Exception?) -> Unit
+    ) {
+        runOnBackground({
+            val query = mutableMapOf("channelId" to channelId)
+            val bodyJson = JSONObject().apply { put("channelId", channelId) }
+            if (!key.isNullOrBlank()) {
+                query["key"] = key
+                bodyJson.put("key", key)
+            }
+            val payload = postEnvelope(
+                "/api/rtc/channel/meta/get",
+                query,
+                bodyJson.toString(),
+                "获取房间属性失败"
+            )
+            attributesFrom(payload, key)
+        }, callback)
+    }
+
+    /**
+     * 删除一个房间属性：`POST /api/rtc/channel/meta/delete`。
+     *
+     * 需要用户 JWT（[setAuthToken]）。
+     */
+    fun deleteRoomAttribute(
+        channelId: String,
+        key: String,
+        callback: (Boolean, Exception?) -> Unit
+    ) {
+        runOnBackground({
+            val query = mapOf("channelId" to channelId, "key" to key)
+            val body = JSONObject().apply {
+                put("channelId", channelId)
+                put("key", key)
+            }.toString()
+            postEnvelope("/api/rtc/channel/meta/delete", query, body, "删除房间属性失败")
+            true
+        }) { success, error ->
+            callback(success ?: false, error)
+        }
+    }
+
+    private fun postEnvelope(
+        path: String,
+        queryParams: Map<String, String>,
+        body: String,
+        fallback: String
+    ): Any? {
+        val (http, respBody) = executeRequest("POST", path, queryParams = queryParams, body = body)
+        val json = try {
+            JSONObject(respBody)
+        } catch (e: Exception) {
+            throw Exception("$fallback: HTTP $http ${respBody.take(180)}", e)
+        }
+        val respCode = if (json.has("code")) json.optInt("code") else if (http !in 200..299) http else -1
+        if (respCode != 0) {
+            throw businessException(respCode, serverMessage(json), fallback)
+        }
+        return if (json.has("data")) json.opt("data") else null
+    }
+
+    private fun serverMessage(json: JSONObject): String {
+        return json.optString("msg").ifBlank { json.optString("message") }
+    }
+
+    private fun businessException(code: Int, serverMessage: String, fallback: String): Exception {
+        return RtcCredentialException.fromCode(code, serverMessage)
+            ?: Exception(serverMessage.ifBlank { fallback })
+    }
+}
+
+private fun attributesFrom(payload: Any?, requestedKey: String?): Map<String, String> {
+    when (payload) {
+        null, JSONObject.NULL -> return emptyMap()
+        is String -> {
+            if (!requestedKey.isNullOrBlank()) return mapOf(requestedKey to payload)
+            return emptyMap()
+        }
+        is JSONObject -> {
+            val key = payload.optString("key")
+            val value = scalarString(payload.opt("value"))
+            if (key.isNotEmpty() && value != null && payload.has("value")) {
+                return mapOf(key to value)
+            }
+            val nested = payload.optJSONObject("attrs")
+                ?: payload.optJSONObject("meta")
+                ?: payload.optJSONObject("attributes")
+            if (nested != null) return stringMap(nested)
+            val list = payload.optJSONArray("list")
+            if (list != null) {
+                val out = linkedMapOf<String, String>()
+                for (i in 0 until list.length()) {
+                    val item = list.optJSONObject(i) ?: continue
+                    val itemKey = item.optString("key")
+                    val itemValue = scalarString(item.opt("value"))
+                    if (itemKey.isNotEmpty() && itemValue != null) out[itemKey] = itemValue
+                }
+                return out
+            }
+            return stringMap(payload)
+        }
+        else -> return emptyMap()
+    }
+}
+
+private fun stringMap(obj: JSONObject): Map<String, String> {
+    val out = linkedMapOf<String, String>()
+    val keys = obj.keys()
+    while (keys.hasNext()) {
+        val key = keys.next()
+        val text = scalarString(obj.opt(key)) ?: continue
+        out[key] = text
+    }
+    return out
+}
+
+private fun scalarString(value: Any?): String? {
+    return when (value) {
+        null, JSONObject.NULL -> null
+        is String -> value
+        is JSONObject, is org.json.JSONArray -> null
+        is Number, is Boolean -> value.toString()
+        else -> null
+    }
+}
+
+private fun readAttrs(json: JSONObject): Map<String, String> {
+    val obj = json.optJSONObject("attrs")
+        ?: json.optJSONObject("attributes")
+        ?: json.optJSONObject("extra")
+        ?: return emptyMap()
+    val map = linkedMapOf<String, String>()
+    val keys = obj.keys()
+    while (keys.hasNext()) {
+        val key = keys.next()
+        val value = obj.opt(key)
+        if (value == null || value == JSONObject.NULL || value is JSONObject || value is org.json.JSONArray) {
+            continue
+        }
+        map[key] = value.toString()
+    }
+    return map
+}
+
+/**
+ * 控制面凭证被拒绝。出现在拉 Token / 续期 Token（以及其它走同一信封的接口）。
+ *
+ * - 4031 凭证已停用（credential suspended）
+ * - 4032 凭证已吊销（credential revoked）
+ * - 4033 凭证已过期（credential expired）
+ */
+class RtcCredentialException(
+    val businessCode: Int,
+    message: String
+) : Exception(message) {
+    companion object {
+        fun fromCode(code: Int, serverMessage: String): RtcCredentialException? {
+            val reason = when (code) {
+                4031 -> "凭证已停用 (credential suspended)"
+                4032 -> "凭证已吊销 (credential revoked)"
+                4033 -> "凭证已过期 (credential expired)"
+                else -> return null
+            }
+            val detail = serverMessage.trim()
+            val text = if (detail.isEmpty()) "$reason [$code]" else "$reason [$code]: $detail"
+            return RtcCredentialException(code, text)
+        }
     }
 }
 

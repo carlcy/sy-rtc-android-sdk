@@ -1,6 +1,7 @@
 package com.sy.rtc.sdk
 
 import android.content.Context
+import android.content.Intent
 
 /**
  * RTC引擎主类
@@ -17,6 +18,12 @@ class RtcEngine private constructor() {
     private var context: Context? = null
 
     companion object {
+        /**
+         * 与仓库 `VERSION`、Demo `versionName` 相同，当前为 3.2.0。
+         * JitPack 坐标使用 `v3.2.0`。
+         */
+        const val VERSION = SdkInfo.VERSION
+
         /**
          * 创建RTC引擎实例
          */
@@ -203,6 +210,37 @@ class RtcEngine private constructor() {
         return impl?.isSpeakerphoneEnabled() ?: false
     }
 
+    /**
+     * 当前播放路由。0 扬声器，1 耳机，2 蓝牙，3 听筒。
+     * 数值对齐常见 Express 路由常量，依据本机 AudioManager，不是服务端下发。
+     */
+    fun getAudioRoute(): Int {
+        return impl?.getAudioRoute() ?: AudioRoute.SPEAKER
+    }
+
+    /**
+     * 切换前后摄像头。没有摄像头采集器（屏幕共享或自定义采集）时返回 -1。
+     */
+    fun switchCamera(): Int {
+        return impl?.switchCamera() ?: -1
+    }
+
+    fun isLocalAudioMuted(): Boolean {
+        return impl?.isLocalAudioMuted() ?: false
+    }
+
+    fun isLocalVideoMuted(): Boolean {
+        return impl?.isLocalVideoMuted() ?: false
+    }
+
+    fun isRemoteAudioMuted(uid: String): Boolean {
+        return impl?.isRemoteAudioMuted(uid) ?: false
+    }
+
+    fun isRemoteVideoMuted(uid: String): Boolean {
+        return impl?.isRemoteVideoMuted(uid) ?: false
+    }
+
     // ==================== 远端音频控制 ====================
 
     /**
@@ -236,10 +274,33 @@ class RtcEngine private constructor() {
     // ==================== Token 刷新 ====================
 
     /**
-     * 更新 Token
+     * 更新 RTC Token。
+     *
+     * 已在频道内时会用新 Token 重连信令（URL `?token=`），不发送 leave，也不拆掉媒体连接。
+     * 收到 [RtcEventHandler.onTokenPrivilegeWillExpire] 后，向业务后端重新要 Token，再调用本方法。
      */
     fun renewToken(token: String) {
         impl?.renewToken(token)
+    }
+
+    /**
+     * 切换画质档位（控制面 `qualityTier`：`audio` / `sd` / `hd` / `fhd`）。
+     *
+     * 只调整本地采集与编码。控制面换档用 [RoomService.switchQualityTier]（用户 JWT）。
+     * 若该接口返回了新 Token，再调用 [renewToken]。
+     *
+     * @return 0 成功，-1 未知档位或引擎未初始化
+     */
+    fun setVideoQuality(tier: VideoQualityTier): Int {
+        return impl?.setVideoQuality(tier) ?: -1
+    }
+
+    /**
+     * [setVideoQuality] 的字符串形式，便于与 Token 参数 `qualityTier` 对齐。
+     */
+    fun setVideoQuality(qualityTier: String): Int {
+        val tier = VideoQualityTier.fromApi(qualityTier) ?: return -1
+        return setVideoQuality(tier)
     }
 
     // ==================== 音频参数配置 ====================
@@ -477,10 +538,28 @@ class RtcEngine private constructor() {
     // ==================== 屏幕共享 ====================
 
     /**
-     * 开始屏幕共享
+     * 保存屏幕共享授权结果。系统回调里的 Intent 需原样传入。
+     */
+    fun setScreenCaptureIntent(permissionResult: Intent) {
+        impl?.setScreenCaptureIntent(permissionResult)
+    }
+
+    /**
+     * 开始屏幕共享。
+     *
+     * 没有 [setScreenCaptureIntent] 或 [startScreenCapture] 传入的授权时，不会报成功。
      */
     fun startScreenCapture(config: ScreenCaptureConfiguration) {
         impl?.startScreenCapture(config)
+    }
+
+    /**
+     * 使用本次授权结果开始屏幕共享。
+     *
+     * @return 0 已启动采集，-1 未授权或创建失败
+     */
+    fun startScreenCapture(permissionResult: Intent, config: ScreenCaptureConfiguration): Int {
+        return impl?.startScreenCapture(permissionResult, config) ?: -1
     }
 
     /**
@@ -504,6 +583,48 @@ class RtcEngine private constructor() {
      */
     fun setBeautyEffectOptions(options: BeautyOptions) {
         impl?.setBeautyEffectOptions(options)
+    }
+
+    /**
+     * 替换内置提亮的采集帧处理器。传 null 恢复内置美颜开关的行为。
+     */
+    fun setVideoFrameProcessor(processor: VideoFrameProcessor?) {
+        impl?.setVideoFrameProcessor(processor)
+    }
+
+    /**
+     * 停掉摄像头，改为由 [pushExternalVideoFrame] 喂帧。
+     *
+     * @return 0 成功，-1 引擎未就绪
+     */
+    fun enableCustomVideoCapture(enabled: Boolean): Int {
+        return impl?.enableCustomVideoCapture(enabled) ?: -1
+    }
+
+    /**
+     * 自定义采集开着时，把一帧送进本地视频源。
+     *
+     * @return 0 已送入，-1 未开启自定义采集
+     */
+    fun pushExternalVideoFrame(frame: org.webrtc.VideoFrame): Int {
+        return impl?.pushExternalVideoFrame(frame) ?: -1
+    }
+
+    /**
+     * 通过频道信令广播本端流附加信息。未进房返回 -1。
+     * 对端收到 [RtcEventHandler.onStreamExtraInfoUpdated]，同时仍收到 [RtcEventHandler.onChannelMessage]。
+     */
+    fun setStreamExtraInfo(extra: String): Int {
+        return impl?.setStreamExtraInfo(extra) ?: -1
+    }
+
+    /**
+     * 经 DataChannel 发送 SEI 风格二进制。不是 H.264 码流 SEI。
+     *
+     * @return 0 已写入打开的通道，-1 流不存在或通道未打开
+     */
+    fun sendSei(streamId: Int, data: ByteArray): Int {
+        return impl?.sendSei(streamId, data) ?: -1
     }
 
     /**

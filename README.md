@@ -1,621 +1,226 @@
 # SY RTC Android SDK
 
-SY RTC Android SDK 是一个用于实时语音通信的 Android 原生 SDK。
+实时音视频 Android SDK（Kotlin / Java）。控制面是 SY 的 `rtc-backend-go`，媒体层是端侧 WebRTC。对齐即构 Express 的是**进房、角色、信令**这条主路径，不是 ZegoExpress 全 API。
 
-## ✨ 特性
+当前版本：**3.2.0**（JitPack tag `v3.2.0`）。
 
-- ✅ 完整的 RTC 功能
-- ✅ 简洁的 API 设计
-- ✅ 支持 Kotlin 和 Java
-- ✅ 支持 Maven 发布
+## 快速开始
 
-## 📦 安装
+和即构 Express 一样，只加仓库和一行带版本号的依赖，不下载、不解压 AAR / zip。
 
-### 方式一：从 JitPack 安装（推荐）
+| 步骤 | 即构 ZEGO Express | SY RTC |
+|------|-------------------|--------|
+| 仓库 | `maven { url 'https://maven.zego.im' }` | `maven { url 'https://jitpack.io' }` |
+| 依赖 | `implementation 'im.zego:express-video:x.y.z'` | `implementation 'com.github.carlcy:sy-rtc-android-sdk:v3.2.0'` |
+| 初始化 | `ZegoExpressEngine.createEngine` | `RtcEngine.create()` + `init(appId, context)` |
+| 鉴权 | AppSign 或 Token | 业务后端用 AppSecret 换 Token，客户端只拿字符串 |
+| 进房 | `loginRoom` | `join(channelId, uid, token)` |
 
-在项目的根目录 `build.gradle` 中添加 JitPack 仓库：
+### 1. 添加仓库
+
+Android Gradle Plugin 7.1+ 写在根目录 `settings.gradle`：
 
 ```gradle
-allprojects {
+dependencyResolutionManagement {
+    repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
     repositories {
         google()
         mavenCentral()
-        maven { url 'https://jitpack.io' }  // 添加 JitPack 仓库
+        maven { url 'https://jitpack.io' }
     }
 }
 ```
 
-在 `app/build.gradle` 中添加依赖：
+Kotlin DSL（`settings.gradle.kts`）：
 
-```gradle
-dependencies {
-    implementation 'com.github.carlcy:sy-rtc-android-sdk:v3.1.0'
+```kotlin
+dependencyResolutionManagement {
+    repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
+    repositories {
+        google()
+        mavenCentral()
+        maven { url = uri("https://jitpack.io") }
+    }
 }
 ```
 
-**注意**：将 `carlcy` 替换为你的 GitHub 用户名，`v3.1.0` 替换为实际的版本号。
+AGP 低于 7.1 时，改写到根 `build.gradle` 的 `allprojects.repositories`，地址同样是 `https://jitpack.io`。
 
-### 方式二：从 Maven Central 安装
+### 2. 添加依赖
 
-如果已发布到 Maven Central：
+`app/build.gradle`：
 
 ```gradle
-repositories {
-    mavenCentral()
-}
-
 dependencies {
-    implementation 'com.github.carlcy:sy-rtc-android-sdk:v3.1.0'
+    implementation 'com.github.carlcy:sy-rtc-android-sdk:v3.2.0'
 }
 ```
 
-### 方式三：使用本地 AAR
+Kotlin DSL：
 
-1. **下载 AAR 文件**
+```kotlin
+dependencies {
+    implementation("com.github.carlcy:sy-rtc-android-sdk:v3.2.0")
+}
+```
 
-   从发布页面下载 `sy-rtc-android-sdk-release.aar` 文件
+把 `v3.2.0` 换成 [Releases](https://github.com/carlcy/sy-rtc-android-sdk/releases) 里的 tag。坐标里的 `carlcy` 是本仓库的 GitHub 用户，客户不要改成自己的用户名。
 
-2. **复制到项目**
+### 3. 权限
 
-   将 AAR 文件复制到 `app/libs/` 目录
-
-3. **配置 build.gradle**
-
-   在 `app/build.gradle` 中添加：
-
-   ```gradle
-   repositories {
-       flatDir {
-           dirs 'libs'
-       }
-   }
-
-   dependencies {
-       implementation(name: 'sy-rtc-android-sdk-release', ext: 'aar')
-   }
-   ```
-
-## 🚀 快速开始
-
-### 1. 添加权限
-
-在 `AndroidManifest.xml` 中添加：
+`minSdk` 21。`AndroidManifest.xml`：
 
 ```xml
 <uses-permission android:name="android.permission.INTERNET" />
 <uses-permission android:name="android.permission.RECORD_AUDIO" />
 <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
 <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+<uses-permission android:name="android.permission.CAMERA" />
 ```
 
-### 2. 初始化 SDK
+Android 6.0+ 在运行时申请 `RECORD_AUDIO` 和 `CAMERA`。
+
+### 4. 初始化
 
 ```kotlin
-import com.sy.rtc.sdk.RtcEngine
-import com.sy.rtc.sdk.RtcEventHandler
-
-// 创建引擎实例
 val engine = RtcEngine.create()
-
-// 初始化
-engine.init("your_app_id") // AppId 从用户后台获取
-```
-
-### 3. 设置事件监听
-
-```kotlin
-engine.setEventHandler(object : RtcEventHandler {
-    override fun onUserJoined(uid: String, elapsed: Int) {
-        Log.d("RTC", "用户加入: $uid, 耗时: ${elapsed}ms")
-    }
-    
-    override fun onUserOffline(uid: String, reason: String) {
-        Log.d("RTC", "用户离开: $uid, 原因: $reason")
-    }
-    
-    override fun onVolumeIndication(speakers: List<VolumeInfo>) {
-        speakers.forEach { info ->
-            Log.d("RTC", "用户 ${info.uid} 音量: ${info.volume}")
-        }
+engine.init(appId, applicationContext)
+engine.setApiBaseUrl("https://your-api.example.com")
+engine.setSignalingServerUrl("wss://your-api.example.com/ws/signaling")
+engine.setEventHandler(object : RtcEventHandler() {
+    override fun onJoinChannelSuccess(channelId: String, uid: String, elapsed: Int) {}
+    override fun onUserJoined(uid: String, elapsed: Int) {}
+    override fun onUserOffline(uid: String, reason: String) {}
+    override fun onTokenPrivilegeWillExpire() {
+        // 向业务后端再要一张 Token，然后 engine.renewToken(newToken)
     }
 })
 ```
 
-### 4. 加入房间
+`appId` 来自 SY 控制台。`AppSecret` 只放在业务后端。
+
+### 5. 获取 Token
+
+客户端不能自己签 Token。业务后端：
+
+```bash
+curl -sS -X POST 'https://your-api.example.com/api/server/rtc/token' \
+  -H 'Content-Type: application/json' \
+  -H 'X-App-Id: YOUR_APP_ID' \
+  -H 'X-App-Secret: YOUR_APP_SECRET' \
+  -d '{"appId":"YOUR_APP_ID","channelId":"demo_room","uid":"user_1","expireHours":24,"role":"publisher","qualityTier":"sd"}'
+```
+
+- `role`：`host` | `audience` | `publisher` | `subscriber`
+- `qualityTier`：`audio` | `sd` | `hd` | `fhd`（分钟计费档位）
+
+调试可以用 `RoomService`（生产环境改为用户 JWT，不要把 AppSecret 打进包）：
 
 ```kotlin
-// 先从服务器获取 Token（不能在前端直接生成）
-val token = getTokenFromServer(appId, channelId, uid)
+val rooms = RoomService(apiBaseUrl, appId)
+rooms.setAuthToken(userJwt)
+rooms.getToken(channelId, uid, role = "publisher", qualityTier = "sd") { token, error ->
+    if (token != null) engine.join(channelId, uid, token)
+}
+```
 
-// 加入房间
+### 6. 加入频道
+
+```kotlin
 engine.join(channelId, uid, token)
-```
-
-### 4.1 设置后端 API 认证 Token
-
-```kotlin
-// 用于调用需要登录认证的后端业务接口（与 join 的 RTC Token 不同）
-engine.setApiAuthToken(jwt)
-```
-
-### 5. 控制音频
-
-```kotlin
-// 启用本地音频
 engine.enableLocalAudio(true)
-
-// 静音
-engine.muteLocalAudio(true)
-
-// 取消静音
-engine.muteLocalAudio(false)
 ```
 
-### 6. 设置角色
+`join` 会把 RTC Token 接到信令地址上：`wss://.../ws/signaling?token=`。
 
-```kotlin
-import com.sy.rtc.sdk.RtcClientRole
-
-// 设置为主播
-engine.setClientRole(RtcClientRole.HOST)
-
-// 设置为观众
-engine.setClientRole(RtcClientRole.AUDIENCE)
-```
-
-### 7. 离开房间
+离开与释放：
 
 ```kotlin
 engine.leave()
-```
-
-### 8. 释放资源
-
-```kotlin
 engine.release()
 ```
 
-## 📖 完整示例
+Token 快过期时：
 
 ```kotlin
-import android.Manifest
-import android.content.pm.PackageManager
-import android.os.Bundle
-import android.util.Log
-import androidx.appcompat.app.AppCompatActivity
-import androidx.core.app.ActivityCompat
-import androidx.core.content.ContextCompat
-import com.sy.rtc.sdk.*
-
-class MainActivity : AppCompatActivity() {
-    private lateinit var engine: RtcEngine
-    private var isJoined = false
-
-    override fun onCreate(savedInstanceState: Bundle?) {
-        super.onCreate(savedInstanceState)
-        
-        // 请求权限
-        requestPermissions()
-        
-        // 初始化引擎
-        initEngine()
+rooms.renewToken(channelId, uid) { newToken, error ->
+    if (error is RtcCredentialException) {
+        // 4031 停用，4032 吊销，4033 过期
+        return@renewToken
     }
-
-    private fun requestPermissions() {
-        val permissions = arrayOf(
-            Manifest.permission.RECORD_AUDIO,
-            Manifest.permission.INTERNET
-        )
-        
-        val needRequest = permissions.filter {
-            ContextCompat.checkSelfPermission(this, it) != PackageManager.PERMISSION_GRANTED
-        }
-        
-        if (needRequest.isNotEmpty()) {
-            ActivityCompat.requestPermissions(this, needRequest.toTypedArray(), 100)
-        }
-    }
-
-    private fun initEngine() {
-        engine = RtcEngine.create()
-        engine.init("your_app_id")
-        
-        engine.setEventHandler(object : RtcEventHandler {
-            override fun onUserJoined(uid: String, elapsed: Int) {
-                Log.d("RTC", "用户加入: $uid")
-            }
-            
-            override fun onUserOffline(uid: String, reason: String) {
-                Log.d("RTC", "用户离开: $uid")
-            }
-            
-            override fun onVolumeIndication(speakers: List<VolumeInfo>) {
-                // 处理音量指示
-            }
-        })
-    }
-
-    private fun joinChannel() {
-        if (isJoined) return
-        
-        // 从服务器获取 Token
-        val token = getTokenFromServer()
-        
-        engine.join("channel_001", "user_001", token)
-        engine.enableLocalAudio(true)
-        
-        isJoined = true
-    }
-
-    private fun leaveChannel() {
-        if (!isJoined) return
-        
-        engine.leave()
-        isJoined = false
-    }
-
-    private fun getTokenFromServer(): String {
-        // 调用服务器 API 获取 Token
-        // 这里需要实现 HTTP 请求
-        return "token_from_server"
-    }
-
-    override fun onDestroy() {
-        super.onDestroy()
-        engine.release()
-    }
+    if (newToken != null) engine.renewToken(newToken)
 }
 ```
 
-## 📚 API 文档
+`RoomService.renewToken` 对应 `POST /api/rtc/token/renew`。`RtcEngine.renewToken` 用新 Token 重连信令，不发送 leave，也不拆掉当前媒体连接。拉 Token 和续期若返回 4031 / 4032 / 4033，callback 的异常是 `RtcCredentialException`。
 
-### RtcEngine
+换画质：本地编码用 `engine.setVideoQuality("hd")`（`audio` | `sd` | `hd` | `fhd`）。控制面档位用用户 JWT 调用 `rooms.switchQualityTier(channelId, "hd")`（`POST /api/rtc/quality/switch`）。若响应里带了新 Token，再 `engine.renewToken`。
 
-#### 创建实例
+## 示例工程
 
-```kotlin
-fun create(): RtcEngine
-```
+`example/` 使用和客户相同的依赖行。Tag 还没推到 JitPack 时，先在仓库根目录执行 `./gradlew publishToMavenLocal`，示例会从本机 Maven 仓库解析同一坐标。
 
-创建 RTC 引擎实例。
-
-#### 初始化
-
-```kotlin
-fun init(appId: String)
-```
-
-初始化 RTC 引擎。
-
-**参数：**
-- `appId`: 应用ID，从用户后台获取
-
-#### 加入房间
-
-```kotlin
-fun join(channelId: String, uid: String, token: String)
-```
-
-加入语音房间。
-
-**参数：**
-- `channelId`: 房间ID
-- `uid`: 用户ID（字符串类型）
-- `token`: 鉴权Token（从服务器获取）
-
-#### 离开房间
-
-```kotlin
-fun leave()
-```
-
-离开当前房间。
-
-#### 启用/禁用本地音频
-
-```kotlin
-fun enableLocalAudio(enabled: Boolean)
-```
-
-启用或禁用本地音频采集和播放。
-
-**参数：**
-- `enabled`: `true` 为启用，`false` 为禁用
-
-#### 静音/取消静音
-
-```kotlin
-fun muteLocalAudio(muted: Boolean)
-```
-
-静音或取消静音本地音频。
-
-**参数：**
-- `muted`: `true` 为静音，`false` 为取消静音
-
-#### 设置客户端角色
-
-```kotlin
-fun setClientRole(role: RtcClientRole)
-```
-
-设置客户端角色。
-
-**参数：**
-- `role`: `RtcClientRole.HOST` 或 `RtcClientRole.AUDIENCE`
-
-#### 设置事件监听
-
-```kotlin
-fun setEventHandler(handler: RtcEventHandler?)
-```
-
-设置事件监听器。
-
-**参数：**
-- `handler`: 事件监听器，`null` 表示移除监听
-
-#### 释放资源
-
-```kotlin
-fun release()
-```
-
-释放引擎资源。在不再使用引擎时调用。
-
-### RtcEventHandler
-
-事件回调接口：
-
-```kotlin
-interface RtcEventHandler {
-    fun onUserJoined(uid: String, elapsed: Int)
-    fun onUserOffline(uid: String, reason: String)
-    fun onVolumeIndication(speakers: List<VolumeInfo>)
-}
-```
-
-**回调说明：**
-- `onUserJoined`: 当有用户加入房间时触发
-  - `uid`: 用户ID
-  - `elapsed`: 加入耗时（毫秒）
-- `onUserOffline`: 当有用户离开房间时触发
-  - `uid`: 用户ID
-  - `reason`: 离开原因
-- `onVolumeIndication`: 当检测到用户音量变化时触发
-  - `speakers`: 说话者列表
-
-### RtcClientRole
-
-客户端角色枚举：
-
-```kotlin
-enum class RtcClientRole {
-    HOST,      // 主播，可以说话
-    AUDIENCE   // 观众，只能听
-}
-```
-
-### VolumeInfo
-
-音量信息：
-
-```kotlin
-data class VolumeInfo(
-    val uid: String,    // 用户ID
-    val volume: Int    // 音量（0-255）
-)
-```
-
-## 🔑 如何获取 Token？
-
-**重要**：Token 必须从服务器获取，不能在前端直接生成！
-
-### 推荐流程
-
-1. **客户端请求加入房间**
-   ```kotlin
-   // 使用 Retrofit 或 OkHttp
-   val response = apiService.getToken(
-       appId = appId,
-       channelId = channelId,
-       uid = uid
-   )
-   val token = response.data.token
-   ```
-
-2. **服务器生成 Token**
-   ```java
-   // 服务器代码（Java Spring Boot）
-   @PostMapping("/rtc/token")
-   public Result<String> generateToken(@RequestBody TokenRequest request) {
-       String token = rtcService.generateToken(
-           request.getAppId(),
-           request.getChannelId(),
-           request.getUid()
-       );
-       return Result.success(token);
-   }
-   ```
-
-3. **客户端使用 Token 加入房间**
-   ```kotlin
-   engine.join(channelId, uid, token)
-   ```
-
-## ⚙️ 项目配置
-
-### 最低要求
-
-在 `app/build.gradle` 中：
-
-```gradle
-android {
-    defaultConfig {
-        minSdk 21  // Android 5.0
-    }
-    
-    compileOptions {
-        sourceCompatibility JavaVersion.VERSION_1_8
-        targetCompatibility JavaVersion.VERSION_1_8
-    }
-    
-    kotlinOptions {
-        jvmTarget = '1.8'
-    }
-}
-```
-
-### 权限配置
-
-在 `AndroidManifest.xml` 中添加：
-
-```xml
-<manifest xmlns:android="http://schemas.android.com/apk/res/android">
-    
-    <!-- 必需权限 -->
-    <uses-permission android:name="android.permission.INTERNET" />
-    <uses-permission android:name="android.permission.RECORD_AUDIO" />
-    <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
-    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
-    
-    <application>
-        <!-- 你的应用配置 -->
-    </application>
-</manifest>
-```
-
-### 运行时权限请求
-
-Android 6.0+ 需要动态请求麦克风权限：
-
-```kotlin
-if (ContextCompat.checkSelfPermission(
-        this,
-        Manifest.permission.RECORD_AUDIO
-    ) != PackageManager.PERMISSION_GRANTED
-) {
-    ActivityCompat.requestPermissions(
-        this,
-        arrayOf(Manifest.permission.RECORD_AUDIO),
-        100
-    )
-}
-```
-
-## 📦 发布到 JitPack（推荐）
-
-### 快速发布
-
-1. **推送到 GitHub**
-   ```bash
-   git add .
-   git commit -m "Release v3.1.0"
-   git push origin main
-   ```
-
-2. **创建 Release Tag**
-   ```bash
-   git tag v3.1.0
-   git push origin v3.1.0
-   ```
-
-3. **访问 JitPack**
-   - 打开 https://jitpack.io/
-   - 搜索：`carlcy/sy-rtc-android-sdk`
-   - JitPack 会自动构建并发布
-
-### 使用方式
-
-用户可以在 `build.gradle` 中使用：
-
-```gradle
-repositories {
-    maven { url 'https://jitpack.io' }
-}
-
-dependencies {
-    implementation 'com.github.carlcy:sy-rtc-android-sdk:v3.1.0'
-}
-```
-
-## 📦 发布到 Maven Central（可选）
-
-SDK 已配置 Maven 发布，也可以发布到 Maven Central。
-
-### 发布到本地 Maven（测试）
+改 SDK 源码联调：把 `example/gradle.properties` 里的 `useLocalSdk` 改成 `true`。
 
 ```bash
-./gradlew publishToMavenLocal
+./gradlew assemble
+cd example && ./gradlew assemble
 ```
 
-### 发布到 Maven Central
+## 发布
 
-1. 注册 Sonatype 账号并配置 GPG 签名
-2. 运行发布命令：
+客户侧推荐 **JitPack**（仓库已公开，不需要 Maven 账号）。Owner 发一版：
 
 ```bash
-./gradlew publish
+# VERSION 与下面的 tag 数字一致，例如文件内容 3.2.0
+git tag v3.2.0
+git push origin v3.2.0
 ```
 
-## ❓ 常见问题
+打开 https://jitpack.io/#carlcy/sy-rtc-android-sdk 确认 `v3.2.0` 构建成功。客户依赖就是：
 
-### 1. 无法加入房间？
-
-**可能原因：**
-- Token 无效或已过期
-- 网络连接问题
-- 权限未授予
-
-**解决方法：**
-- 重新从服务器获取 Token
-- 检查网络连接
-- 确保已授予麦克风权限
-
-### 2. 没有声音？
-
-**可能原因：**
-- 本地音频未启用
-- 已静音
-- 角色设置为观众
-
-**解决方法：**
-```kotlin
-// 启用本地音频
-engine.enableLocalAudio(true)
-
-// 取消静音
-engine.muteLocalAudio(false)
-
-// 设置为主播
-engine.setClientRole(RtcClientRole.HOST)
+```gradle
+implementation 'com.github.carlcy:sy-rtc-android-sdk:v3.2.0'
 ```
 
-### 3. 编译错误？
+Maven Central 是可选的正式仓库，需要 Owner 自己准备签名和 Central Portal 令牌。步骤见 [PUBLISH_GUIDE.md](./PUBLISH_GUIDE.md)。
 
-**可能原因：**
-- Kotlin 版本不兼容
-- 依赖冲突
+## 常用 API
 
-**解决方法：**
-- 确保 Kotlin 版本 >= 1.8
-- 检查依赖版本冲突
+包名 `com.sy.rtc.sdk`。
 
-## 📱 平台要求
+| API | 说明 |
+|-----|------|
+| `RtcEngine.create()` / `init(appId, context)` | 创建并初始化 |
+| `setApiBaseUrl` / `setSignalingServerUrl` / `setApiAuthToken` | 控制面与信令地址；JWT 与 RTC Token 不是同一个 |
+| `join` / `leave` / `renewToken` | 进出频道；续期重连信令 |
+| `setClientRole` / `setChannelProfile` | `HOST` / `AUDIENCE` / `PUBLISHER` / `SUBSCRIBER`；场景需在 `join` 前设置 |
+| `RtcEngine.VERSION` | 常量 `3.2.0`，与 `VERSION`、Demo `versionName` 一致 |
+| `enableLocalAudio` / `muteLocalAudio` / `isLocalAudioMuted` | 本地音频。静音会通过信令通知对端 `onUserMuteAudio` |
+| `muteRemoteAudioStream` / `muteAllRemoteAudioStreams` | 停止播放该路远端音频（本机 `AudioTrack`），不是服务端强制断流 |
+| `enableVideo` / `setVideoQuality` / `switchCamera` / `setupLocalVideo` / `setupRemoteVideo` | 视频。`switchCamera` 在摄像头采集时切换前后摄 |
+| `setEnableSpeakerphone` / `getAudioRoute` | 扬声器或听筒。路由回调 `onAudioRoutingChanged`：0 扬声器，1 耳机，2 蓝牙，3 听筒 |
+| `setBeautyEffectOptions` / `setVideoFrameProcessor` | 内置提亮作用于编码前的帧；自定义处理器会替换内置提亮 |
+| `startScreenCapture(intent, config)` | 需要 MediaProjection 授权。没有 Intent 不会报成功 |
+| `enableCustomVideoCapture` / `pushExternalVideoFrame` | 外部视频帧送入本地视频源 |
+| `enableAudioVolumeIndication` | 音量来自 PCM 或 WebRTC `audioLevel`，没有样本时为 0 |
+| `onNetworkQuality` | 本机 ICE RTT 与丢包估计。没有样本时是 `unknown`，不是 SFU 探测 |
+| `setStreamExtraInfo` | 信令广播附加信息，对端 `onStreamExtraInfoUpdated` |
+| `createDataStream` / `sendStreamMessage` / `sendSei` | DataChannel。`sendSei` 只是带前缀的数据通道消息，不是码流 SEI |
+| `RoomService.getToken` / `fetchToken` / `renewToken` | `POST /api/rtc/token` 与 `POST /api/rtc/token/renew`。4031/4032/4033 为 `RtcCredentialException` |
+| `RoomService.switchQualityTier` | `POST /api/rtc/quality/switch`，只认用户 JWT |
+| `setRoomAttribute` / `getRoomAttributes` / `deleteRoomAttribute` | `POST /api/rtc/channel/meta/set`、`get`、`delete`，只认用户 JWT |
 
-- **minSdk**: 21 (Android 5.0)
-- **compileSdk**: 34
-- **Kotlin**: 1.8+
-- **Java**: 1.8+
+`audience` / `subscriber` 只关本地推流，不是 SFU 强制切断。
 
-## 📄 许可证
+## 常见问题
+
+**依赖解析失败。** 确认仓库里有 `https://jitpack.io`，版本号是 tag（带 `v`），例如 `v3.2.0`。该 tag 必须已经 push，并且 JitPack 页面是绿色。
+
+**进不了频道。** Token 过期、信令地址没有 `wss`、或麦克风权限没给。重新向业务后端要 Token，再 `join` 或 `renewToken`。
+
+**没有声音。** `enableLocalAudio(true)`、`muteLocalAudio(false)`，角色用 `RtcClientRole.HOST` 或 `PUBLISHER`。
+
+## 许可证
 
 MIT License
-
-## 🤝 贡献
-
-欢迎提交 Issue 和 Pull Request！
-
----
-
-**最后更新**: 2026-01-14

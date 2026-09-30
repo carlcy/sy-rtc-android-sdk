@@ -12,21 +12,22 @@ pluginManagement {
 }
 
 dependencyResolutionManagement {
-    // PREFER_SETTINGS：允许 SDK 模块自身 repositories 块存在而不失败
     repositoriesMode.set(RepositoriesMode.PREFER_SETTINGS)
     repositories {
+        // 与客户同一坐标。仓库根目录 ./gradlew publishToMavenLocal 后，本地包优先于 JitPack。
+        mavenLocal()
         google()
         mavenCentral()
         maven { url 'https://jitpack.io' }
-        flatDir {
-            dirs new File(rootDir, 'libs').absolutePath
-            dirs new File(rootDir, '../build/outputs/aar').absolutePath
-        }
     }
 }
 
 rootProject.name = "SyRtcSDKExample"
 include ':app'
-// 源码联调：直接依赖上级 Android Library，避免陈旧 AAR
-include ':sy-rtc-android-sdk'
-project(':sy-rtc-android-sdk').projectDir = new File(settingsDir, '..')
+
+// 源码联调：example/gradle.properties 里 useLocalSdk=true
+def useLocalSdk = providers.gradleProperty("useLocalSdk").orElse("false").get() == "true"
+if (useLocalSdk) {
+    include ':sy-rtc-android-sdk'
+    project(':sy-rtc-android-sdk').projectDir = new File(settingsDir, '..')
+}
