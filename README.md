@@ -201,7 +201,7 @@ Maven Central 是可选的正式仓库，需要 Owner 自己准备签名和 Cent
 | `enableVideo` / `setVideoQuality` / `switchCamera` / `setupLocalVideo` / `setupRemoteVideo` | 视频。`switchCamera` 在摄像头采集时切换前后摄 |
 | `setEnableSpeakerphone` / `getAudioRoute` | 扬声器或听筒。路由回调 `onAudioRoutingChanged`：0 扬声器，1 耳机，2 蓝牙，3 听筒 |
 | `setBeautyEffectOptions` / `setVideoFrameProcessor` | 内置提亮作用于编码前的帧；自定义处理器会替换内置提亮 |
-| `startScreenCapture(intent, config)` | 需要 MediaProjection 授权。没有 Intent 不会报成功 |
+| `startScreenCapture(intent, config)` | 需要 MediaProjection 授权。Android 10+ 自动启动 SDK 内置的 `mediaProjection` 前台服务 `ScreenCaptureService`（见下文），返回 0 表示已提交，开始采集时回调 `onLocalVideoStateChanged("screen_capturing")`，失败 `onError(1006)` |
 | `enableCustomVideoCapture` / `pushExternalVideoFrame` | 外部视频帧送入本地视频源 |
 | `enableAudioVolumeIndication` | 音量来自 PCM 或 WebRTC `audioLevel`，没有样本时为 0 |
 | `onNetworkQuality` | 本机 ICE RTT 与丢包估计。没有样本时是 `unknown`，不是 SFU 探测 |
@@ -212,6 +212,16 @@ Maven Central 是可选的正式仓库，需要 Owner 自己准备签名和 Cent
 | `setRoomAttribute` / `getRoomAttributes` / `deleteRoomAttribute` | `POST /api/rtc/channel/meta/set`、`get`、`delete`，只认用户 JWT |
 
 `audience` / `subscriber` 只关本地推流，不是 SFU 强制切断。
+
+### 屏幕共享前台服务
+
+Android 10（API 29）起，MediaProjection 必须运行在类型为 `mediaProjection` 的前台服务里（Android 14 起不满足会直接抛 `SecurityException`）。SDK 自带 `com.sy.rtc.sdk.ScreenCaptureService`，并在 SDK 的 manifest 中声明了服务与 `FOREGROUND_SERVICE`、`FOREGROUND_SERVICE_MEDIA_PROJECTION` 权限，manifest 合并后宿主 **不需要** 再声明。
+
+- `startScreenCapture` 在用户授权后先启动该服务并显示常驻通知（渠道 `sy_rtc_screen_capture`，低优先级），服务进入前台后才创建 MediaProjection。
+- `stopScreenCapture`、系统结束投屏、`leave` 时自动停止服务。
+- 自定义通知：`ScreenCaptureService.notificationTitle` / `notificationText` / `smallIcon`（在 `startScreenCapture` 前设置）。
+- 宿主已有自己的 mediaProjection 前台服务时，设 `ScreenCaptureService.enabled = false`，SDK 就不再启动它。
+- Android 13+ 若未授予 `POST_NOTIFICATIONS`，通知不会出现在通知栏，但服务照常运行。
 
 ## 常见问题
 

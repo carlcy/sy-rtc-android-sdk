@@ -12,6 +12,7 @@
 - `RtcEngine.setVideoQuality(VideoQualityTier)` / `setVideoQuality("audio"|"sd"|"hd"|"fhd")` — 本地画质档位
 - `RoomService.switchQualityTier` — `POST /api/rtc/quality/switch`（用户 JWT）
 - `RoomService.renewToken` — `POST /api/rtc/token/renew`，参数与 `fetchToken` 相同
+- `ScreenCaptureService` — 内置 `mediaProjection` 前台服务（manifest 合并，含 `FOREGROUND_SERVICE_MEDIA_PROJECTION`）。Android 10+ 由 `startScreenCapture` 自动启动、`stopScreenCapture` / 离开频道时停止；宿主无需声明。可用 `ScreenCaptureService.enabled = false` 关闭。
 - `RoomService.setRoomAttribute` / `getRoomAttributes` / `deleteRoomAttribute` — `POST /api/rtc/channel/meta/set|get|delete`（用户 JWT）
 - 拉 Token / 续期遇到业务码 4031（停用）、4032（吊销）、4033（过期）时，callback 收到 `RtcCredentialException`
 - `RoomInfo.currentSeats`、`RoomInfo.attrs`（缺省为空，旧构造仍可用）

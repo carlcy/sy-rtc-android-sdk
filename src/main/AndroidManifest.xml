@@ -7,7 +7,7 @@
     <uses-permission android:name="android.permission.CAMERA" />
     <uses-permission android:name="android.permission.BLUETOOTH" android:maxSdkVersion="30" />
     <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
-    <!-- 屏幕共享 / 后台通话（真机按需；示例 README 说明） -->
+    <!-- 屏幕共享前台服务（ScreenCaptureService）与后台通话 -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PROJECTION" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
@@ -15,4 +15,13 @@
 
     <uses-feature android:name="android.hardware.camera" android:required="false" />
     <uses-feature android:name="android.hardware.microphone" android:required="false" />
+
+    <application>
+        <!-- 屏幕共享：Android 10+ MediaProjection 必须跑在 mediaProjection 前台服务里。
+             随 manifest 合并进宿主，startScreenCapture / stopScreenCapture 自动启停。 -->
+        <service
+            android:name="com.sy.rtc.sdk.ScreenCaptureService"
+            android:exported="false"
+            android:foregroundServiceType="mediaProjection" />
+    </application>
 </manifest>

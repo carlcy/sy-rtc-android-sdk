@@ -91,6 +91,8 @@ internal class RtcEngineImpl(
     
     // 屏幕共享状态
     private val isScreenCapturing = AtomicBoolean(false)
+    /** 已请求 mediaProjection 前台服务、尚未开始采集。 */
+    private val screenCaptureStarting = AtomicBoolean(false)
     private var screenCaptureConfig: ScreenCaptureConfiguration? = null
     
     // 美颜配置
@@ -1648,7 +1650,7 @@ internal class RtcEngineImpl(
     }
 
     fun startScreenCapture(config: ScreenCaptureConfiguration): Int {
-        if (isScreenCapturing.get()) {
+        if (isScreenCapturing.get() || screenCaptureStarting.get()) {
             Log.w(TAG, "屏幕共享已在进行中")
             return -1
         }
@@ -1658,6 +1660,38 @@ internal class RtcEngineImpl(
             eventHandler?.onError(1006, "屏幕共享需要授权 Intent，请调用 startScreenCapture(intent, config)")
             return -1
         }
+        val factory = peerConnectionFactory
+        val egl = eglBase?.eglBaseContext
+        if (factory == null || egl == null) {
+            eventHandler?.onError(1006, "WebRTC 未就绪，无法共享屏幕")
+            return -1
+        }
+        if (ScreenCaptureService.enabled && ScreenCaptureService.isRequired()) {
+            // Android 10+：先让 mediaProjection 前台服务进入前台，再创建 MediaProjection。
+            // 返回 0 表示已提交；真正开始采集时回调 onLocalVideoStateChanged("screen_capturing")，失败回调 onError(1006)。
+            val appContext = context.applicationContext
+            screenCaptureStarting.set(true)
+            ScreenCaptureService.start(appContext) { error ->
+                mainHandler.post {
+                    if (!screenCaptureStarting.getAndSet(false)) {
+                        // 期间已调用 stopScreenCapture。
+                        ScreenCaptureService.stop(appContext)
+                        return@post
+                    }
+                    if (error != null) {
+                        ScreenCaptureService.stop(appContext)
+                        eventHandler?.onError(1006, "屏幕共享前台服务启动失败: ${error.message}")
+                    } else if (startScreenCaptureNow(intent, config) != 0) {
+                        ScreenCaptureService.stop(appContext)
+                    }
+                }
+            }
+            return 0
+        }
+        return startScreenCaptureNow(intent, config)
+    }
+
+    private fun startScreenCaptureNow(intent: Intent, config: ScreenCaptureConfiguration): Int {
         val factory = peerConnectionFactory
         val egl = eglBase?.eglBaseContext
         if (factory == null || egl == null) {
@@ -1703,6 +1737,11 @@ internal class RtcEngineImpl(
     }
     
     fun stopScreenCapture() {
+        if (screenCaptureStarting.getAndSet(false)) {
+            ScreenCaptureService.stop(context.applicationContext)
+            Log.d(TAG, "屏幕共享在前台服务就绪前被取消")
+            return
+        }
         if (!isScreenCapturing.get()) {
             Log.w(TAG, "屏幕共享未在进行中")
             return
@@ -1728,6 +1767,10 @@ internal class RtcEngineImpl(
             Log.d(TAG, "屏幕录制已停止")
         } catch (e: Exception) {
             Log.e(TAG, "停止屏幕共享失败", e)
+        } finally {
+            if (ScreenCaptureService.enabled) {
+                ScreenCaptureService.stop(context.applicationContext)
+            }
         }
     }
     
@@ -2244,8 +2287,8 @@ internal class RtcEngineImpl(
         // 停止音频录制
         stopAudioRecording()
         
-        // 停止屏幕共享
-        if (isScreenCapturing.get()) {
+        // 停止屏幕共享（含尚在等待前台服务的请求）
+        if (isScreenCapturing.get() || screenCaptureStarting.get()) {
             stopScreenCapture()
         }
         

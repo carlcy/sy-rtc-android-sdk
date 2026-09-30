@@ -556,7 +556,12 @@ class RtcEngine private constructor() {
     /**
      * 使用本次授权结果开始屏幕共享。
      *
-     * @return 0 已启动采集，-1 未授权或创建失败
+     * Android 10+ 会先自动启动 SDK 内置的 mediaProjection 前台服务 [ScreenCaptureService]
+     * （已随 SDK manifest 合并，宿主无需声明），服务进入前台后才开始采集。
+     *
+     * @return 0 已提交（Android 9 及以下为已启动采集）；采集真正开始时回调
+     * `onLocalVideoStateChanged("screen_capturing", "")`，失败回调 `onError(1006, …)`。
+     * -1 表示未授权、已在共享或 WebRTC 未就绪。
      */
     fun startScreenCapture(permissionResult: Intent, config: ScreenCaptureConfiguration): Int {
         return impl?.startScreenCapture(permissionResult, config) ?: -1
