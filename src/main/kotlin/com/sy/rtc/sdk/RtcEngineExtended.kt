@@ -128,6 +128,7 @@ enum class VideoQualityTier(
 data class AudioRecordingConfiguration(
     val filePath: String,
     val sampleRate: Int = 32000,
+    /** 目前录音固定为单声道，其他值会被忽略（并打印警告）。 */
     val channels: Int = 1,
     val codecType: String = "aacLc",
     val quality: String = "medium",

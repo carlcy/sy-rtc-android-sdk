@@ -2334,6 +2334,7 @@ internal class RtcEngineImpl(
             eventHandler?.onError(RtcErrorCode.INVALID_ARGUMENT, "filePath 不能为空，sampleRate 需在 8000–48000")
             return -1
         }
+        if (config.channels != 1) Log.w(TAG, "录音固定为单声道，忽略 channels=${config.channels}")
         audioRecordingConfig = config
         val file = java.io.File(config.filePath)
         if (isJoined.get() && localAudioTrack != null) {
