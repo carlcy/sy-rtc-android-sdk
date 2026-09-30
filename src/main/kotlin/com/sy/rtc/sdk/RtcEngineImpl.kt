@@ -145,6 +145,8 @@ internal class RtcEngineImpl(
     private var iceRetry: Runnable? = null
     private val iceLostPeers: MutableSet<String> = ConcurrentHashMap.newKeySet()
     private val mainHandler by lazy { android.os.Handler(android.os.Looper.getMainLooper()) }
+    private var tokenWarnTask: Runnable? = null
+    private var tokenExpireTask: Runnable? = null
     private var localAudioMuted = false
     private var localVideoMuted = false
     private var allRemoteAudioMuted = false
@@ -323,12 +325,12 @@ internal class RtcEngineImpl(
     fun join(channelId: String, uid: String, token: String) {
         if (channelId.isBlank() || uid.isBlank() || token.isBlank()) {
             Log.e(TAG, "join 参数不能为空: channelId/uid/token")
-            eventHandler?.onError(1000, "channelId/uid/token 不能为空")
+            eventHandler?.onError(RtcErrorCode.INVALID_ARGUMENT, "channelId/uid/token 不能为空")
             return
         }
         if (isJoined.get()) {
             Log.w(TAG, "已经加入频道，请先离开")
-            eventHandler?.onError(1000, "已经加入频道，请先 leave()")
+            eventHandler?.onError(RtcErrorCode.INVALID_ARGUMENT, "已经加入频道，请先 leave()")
             return
         }
         
@@ -361,6 +363,7 @@ internal class RtcEngineImpl(
             signalingClient?.connect()
             startMemberStatePoll(channelId, uid)
             startStatsPoll()
+            scheduleTokenPrivilegeWatch(token)
             
             // 创建音频轨道
             val audioSource = peerConnectionFactory?.createAudioSource(org.webrtc.MediaConstraints())
@@ -384,6 +387,7 @@ internal class RtcEngineImpl(
         try {
             stopMemberStatePoll()
             stopStatsPoll()
+            cancelTokenPrivilegeWatch()
             signalingRetry?.let { mainHandler.removeCallbacks(it) }
             signalingRetry = null
             signalingRetryPosted.set(false)
@@ -452,7 +456,7 @@ internal class RtcEngineImpl(
                 val reason = (data["reason"] as? String) ?: "kicked"
                 Log.w(TAG, "被踢出频道: $reason")
                 eventHandler?.onKicked(channelId, reason)
-                eventHandler?.onError(1004, "kicked: $reason")
+                eventHandler?.onError(RtcErrorCode.forKicked(data), "kicked: $reason")
                 leave()
             }
             "user-kicked" -> {
@@ -661,9 +665,13 @@ internal class RtcEngineImpl(
                     videoMuted?.let { applyRemoteSelfMute(fromUid, "video", it) }
                 }
             }
+            "token-will-expire", "token-privilege-will-expire" -> eventHandler?.onTokenPrivilegeWillExpire()
+            "token-expired", "request-token" -> eventHandler?.onRequestToken()
             "error" -> {
-                val msg = (data["error"] as? String) ?: "信令错误"
-                eventHandler?.onError(1002, msg)
+                eventHandler?.onError(
+                    RtcErrorCode.forSignalingError(data),
+                    RtcErrorCode.signalingErrorMessage(data),
+                )
             }
         }
     }
@@ -1156,7 +1164,7 @@ internal class RtcEngineImpl(
     
     fun renewToken(token: String) {
         if (token.isBlank()) {
-            eventHandler?.onError(1000, "token 不能为空")
+            eventHandler?.onError(RtcErrorCode.INVALID_ARGUMENT, "token 不能为空")
             return
         }
         // 媒体 PeerConnection 保持不动。信令 URL 的 ?token= 必须换成新 Token，
@@ -1165,8 +1173,36 @@ internal class RtcEngineImpl(
         val client = signalingClient
         if (client != null && isJoined.get()) {
             client.renewToken(token)
+            scheduleTokenPrivilegeWatch(token)
         }
         Log.d(TAG, "更新Token: len=${token.length}")
+    }
+
+    private fun cancelTokenPrivilegeWatch() {
+        tokenWarnTask?.let { mainHandler.removeCallbacks(it) }
+        tokenExpireTask?.let { mainHandler.removeCallbacks(it) }
+        tokenWarnTask = null
+        tokenExpireTask = null
+    }
+
+    /**
+     * Token 里带过期时间（服务端 `expireAt` 或 JWT `exp`）时，过期前 30 秒回调
+     * `onTokenPrivilegeWillExpire`，到期回调 `onRequestToken`。与 iOS 相同。
+     */
+    private fun scheduleTokenPrivilegeWatch(token: String) {
+        cancelTokenPrivilegeWatch()
+        val exp = TokenExpiry.expireAtSeconds(token) ?: return
+        val (warnDelay, expireDelay) = TokenExpiry.delaysMs(exp, System.currentTimeMillis())
+        if (expireDelay <= 0) {
+            mainHandler.post { if (isJoined.get()) eventHandler?.onRequestToken() }
+            return
+        }
+        val warn = Runnable { if (isJoined.get()) eventHandler?.onTokenPrivilegeWillExpire() }
+        val expired = Runnable { if (isJoined.get()) eventHandler?.onRequestToken() }
+        tokenWarnTask = warn
+        tokenExpireTask = expired
+        mainHandler.postDelayed(warn, warnDelay)
+        mainHandler.postDelayed(expired, expireDelay)
     }
 
     /**
@@ -1723,13 +1759,13 @@ internal class RtcEngineImpl(
         val intent = screenCaptureIntent
         if (intent == null) {
             Log.w(TAG, "屏幕共享缺少 MediaProjection 授权")
-            eventHandler?.onError(1006, "屏幕共享需要授权 Intent，请调用 startScreenCapture(intent, config)")
+            eventHandler?.onError(RtcErrorCode.SCREEN_SHARE, "屏幕共享需要授权 Intent，请调用 startScreenCapture(intent, config)")
             return -1
         }
         val factory = peerConnectionFactory
         val egl = eglBase?.eglBaseContext
         if (factory == null || egl == null) {
-            eventHandler?.onError(1006, "WebRTC 未就绪，无法共享屏幕")
+            eventHandler?.onError(RtcErrorCode.SCREEN_SHARE, "WebRTC 未就绪，无法共享屏幕")
             return -1
         }
         if (ScreenCaptureService.enabled && ScreenCaptureService.isRequired()) {
@@ -1746,7 +1782,7 @@ internal class RtcEngineImpl(
                     }
                     if (error != null) {
                         ScreenCaptureService.stop(appContext)
-                        eventHandler?.onError(1006, "屏幕共享前台服务启动失败: ${error.message}")
+                        eventHandler?.onError(RtcErrorCode.SCREEN_SHARE, "屏幕共享前台服务启动失败: ${error.message}")
                     } else if (startScreenCaptureNow(intent, config) != 0) {
                         ScreenCaptureService.stop(appContext)
                     }
@@ -1761,7 +1797,7 @@ internal class RtcEngineImpl(
         val factory = peerConnectionFactory
         val egl = eglBase?.eglBaseContext
         if (factory == null || egl == null) {
-            eventHandler?.onError(1006, "WebRTC 未就绪，无法共享屏幕")
+            eventHandler?.onError(RtcErrorCode.SCREEN_SHARE, "WebRTC 未就绪，无法共享屏幕")
             return -1
         }
         return try {
@@ -1797,7 +1833,7 @@ internal class RtcEngineImpl(
         } catch (e: Exception) {
             Log.e(TAG, "启动屏幕共享失败", e)
             isScreenCapturing.set(false)
-            eventHandler?.onError(1006, e.message ?: "startScreenCapture failed")
+            eventHandler?.onError(RtcErrorCode.SCREEN_SHARE, e.message ?: "startScreenCapture failed")
             -1
         }
     }
@@ -1929,13 +1965,13 @@ internal class RtcEngineImpl(
                     eventHandler?.onLocalVideoStateChanged(if (isFrontCamera) "front_camera" else "back_camera", "")
                 }
                 override fun onCameraSwitchError(errorDescription: String?) {
-                    eventHandler?.onError(1005, errorDescription ?: "switchCamera failed")
+                    eventHandler?.onError(RtcErrorCode.CAMERA, errorDescription ?: "switchCamera failed")
                 }
             })
             0
         } catch (e: Exception) {
             Log.e(TAG, "切换摄像头失败", e)
-            eventHandler?.onError(1005, e.message ?: "switchCamera failed")
+            eventHandler?.onError(RtcErrorCode.CAMERA, e.message ?: "switchCamera failed")
             -1
         }
     }
@@ -2447,7 +2483,7 @@ internal class RtcEngineImpl(
         if (!decision.shouldRetry) {
             signalingRetryPosted.set(false)
             eventHandler?.onReconnectFailed("signaling")
-            eventHandler?.onError(1003, "信令重连失败")
+            eventHandler?.onError(RtcErrorCode.RECONNECT_FAILED, "信令重连失败")
             return
         }
         val delayMs = decision.delayMs
@@ -2479,7 +2515,7 @@ internal class RtcEngineImpl(
             iceRecoveryPending.set(false)
             iceLostPeers.clear()
             eventHandler?.onReconnectFailed("ice")
-            eventHandler?.onError(1003, "媒体连接重连失败")
+            eventHandler?.onError(RtcErrorCode.RECONNECT_FAILED, "媒体连接重连失败")
             return
         }
         eventHandler?.onReconnecting("ice", decision.attempt, ReconnectPolicy.MAX_ATTEMPTS, decision.delayMs)

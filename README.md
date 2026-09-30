@@ -232,6 +232,29 @@ Maven Central 是可选的正式仓库，需要 Owner 自己准备签名和 Cent
 
 3.2.0 之前 Android 只重试 3 次、间隔 1/2/3 秒，reason 为 `join` / `user-list` / `rejoined`；`restartIce` 没有重发 offer，实际不生效。
 
+### 错误码
+
+`onError(code, message)` 的取值三端（Android `RtcErrorCode`、iOS `SyRtcErrorCode`、Flutter `SyRtcErrorCode`）相同：
+
+| code | 常量 | 含义 |
+|---|---|---|
+| 1000 | `INVALID_ARGUMENT` | 参数无效或调用时机不对（空 Token、重复 join、未知画质档位、附加信息超过 1024 字节） |
+| 1002 | `SIGNALING` | 信令服务端返回的错误，message 为服务端原文 |
+| 1003 | `RECONNECT_FAILED` | 重连 5 次都失败，需要 leave 后重新 join |
+| 1004 | `KICKED` | 被房间管理踢出（同时回调 `onKicked`） |
+| 1005 | `CAMERA` | 摄像头打开 / 切换失败，或没有可用视频源 |
+| 1006 | `SCREEN_SHARE` | 屏幕共享失败 |
+| 1007 | `CUSTOM_CAPTURE` | 自定义采集用法错误 |
+| 1009 | `AUDIO_ROUTE` | 音频路由切换失败或不支持（目前只有 iOS 会报） |
+| 403 | `FORBIDDEN` | 服务端拒绝入房：在踢出名单、房间锁定、不在白名单 |
+| 4031 / 4032 / 4033 | `CREDENTIAL_SUSPENDED` / `REVOKED` / `EXPIRED` | AppId 的访问凭证被暂停 / 吊销 / 过期；服务端会断开信令，SDK 收到 `onKicked` 后以此码回调 `onError`（不再报 1004） |
+
+403 和 4031–4033 与控制面 REST 的业务码相同，取自信令 `kicked` / `error` 帧的 `data.code`（需要 2026-09-30 之后的 rtc-backend-go）。
+
+### Token 过期提醒
+
+Token 是服务端签发的 `base64url(payload).签名`，payload 里的 `expireAt` 是过期时间（Unix 秒）。`join` 和 `renewToken` 后，SDK 在过期前 30 秒回调 `onTokenPrivilegeWillExpire`，到期回调 `onRequestToken`；收到后向业务后端再要一张 Token，调用 `renewToken`。iOS 行为相同。服务端若下发 `token-will-expire` / `token-expired` 信令，也会走同样的回调。
+
 ### 网络质量档位
 
 RTT 和丢包各自落档，取较差的一档；没有样本时为 `unknown`。阈值参考即构 Express 的分级，Android 与 iOS 完全相同（两端各有同一张表的单测）。 3.2.0 起名字与 iOS 统一：原 `medium` 改为 `poor`，`die` 改为 `down`（`NetworkQualityEstimator.MEDIUM` / `DIE` 仍保留为已弃用别名）。`onRtcStats` 同时给 `lossPercent`（0–100）和 `packetLossRate`（0–1）。

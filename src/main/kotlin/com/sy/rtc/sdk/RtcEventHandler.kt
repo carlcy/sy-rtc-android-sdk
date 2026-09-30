@@ -90,12 +90,12 @@ open class RtcEventHandler {
     open fun onNetworkQuality(uid: String, txQuality: String, rxQuality: String) {}
 
     /**
-     * Token即将过期回调
+     * Token 将在 30 秒内过期（按 Token 里的 `expireAt` 计时）。向业务后端要新 Token 后调用 `renewToken`。
      */
     open fun onTokenPrivilegeWillExpire() {}
 
     /**
-     * 请求Token回调
+     * Token 已过期，需要立即 `renewToken`。
      */
     open fun onRequestToken() {}
 
@@ -203,7 +203,7 @@ open class RtcEventHandler {
     /**
      * 错误回调（可选）
      *
-     * @param code 错误码（自定义）
+     * @param code 错误码，取值见 [RtcErrorCode]（三端一致）
      * @param message 错误信息
      */
     open fun onError(code: Int, message: String) {}

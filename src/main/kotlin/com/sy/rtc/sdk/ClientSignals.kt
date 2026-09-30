@@ -617,3 +617,111 @@ internal object FlatJson {
         }
     }
 }
+
+/**
+ * `onError(code, message)` 的错误码。Android、iOS、Flutter 三端取值相同。
+ *
+ * 10xx 是 SDK 本地错误；403 / 4031 / 4032 / 4033 与服务端 REST 业务码相同，
+ * 来自信令 `kicked` / `error` 帧的 `data.code`。
+ */
+object RtcErrorCode {
+    /** 参数无效或调用时机不对（未加入就调用、已加入又 join、未知画质档位、附加信息超过 1024 字节等）。 */
+    const val INVALID_ARGUMENT = 1000
+    /** 信令服务端返回的错误（入房校验失败等）；message 为服务端原文。 */
+    const val SIGNALING = 1002
+    /** 断线重连 5 次都失败，需 leave 后重新 join。 */
+    const val RECONNECT_FAILED = 1003
+    /** 被服务端踢出（房间管理）。凭证被停用时改报 4031/4032/4033。 */
+    const val KICKED = 1004
+    /** 摄像头打开或切换失败，或没有可用视频源。 */
+    const val CAMERA = 1005
+    /** 屏幕共享失败（未授权、前台服务启动失败等）。 */
+    const val SCREEN_SHARE = 1006
+    /** 自定义视频采集用法错误或视频源未就绪。 */
+    const val CUSTOM_CAPTURE = 1007
+    /** 音频路由切换失败或当前平台不支持。 */
+    const val AUDIO_ROUTE = 1009
+    /** 服务端拒绝入房（被踢名单、房间锁定、不在白名单）。 */
+    const val FORBIDDEN = 403
+    /** AppId 的访问凭证已暂停。 */
+    const val CREDENTIAL_SUSPENDED = 4031
+    /** AppId 的访问凭证已吊销。 */
+    const val CREDENTIAL_REVOKED = 4032
+    /** AppId 的访问凭证已过期。 */
+    const val CREDENTIAL_EXPIRED = 4033
+
+    fun isCredentialBlocked(code: Int): Boolean =
+        code == CREDENTIAL_SUSPENDED || code == CREDENTIAL_REVOKED || code == CREDENTIAL_EXPIRED
+
+    /** 信令 `kicked` 帧对应的错误码：带凭证码时用凭证码，否则 [KICKED]。 */
+    fun forKicked(data: Map<String, Any?>): Int {
+        val code = (data["code"] as? Number)?.toInt() ?: return KICKED
+        return if (isCredentialBlocked(code)) code else KICKED
+    }
+
+    /** 信令 `error` 帧对应的错误码：403 与凭证码原样透传，其余归为 [SIGNALING]。 */
+    fun forSignalingError(data: Map<String, Any?>): Int {
+        val code = (data["code"] as? Number)?.toInt() ?: return SIGNALING
+        return if (code == FORBIDDEN || isCredentialBlocked(code)) code else SIGNALING
+    }
+
+    /** 信令 `error` 帧的文本；新服务端用 `message`，旧服务端用 `error`。 */
+    fun signalingErrorMessage(data: Map<String, Any?>): String =
+        (data["message"] as? String)?.takeIf { it.isNotBlank() }
+            ?: (data["error"] as? String)?.takeIf { it.isNotBlank() }
+            ?: "信令错误"
+}
+
+/**
+ * RTC Token 过期时间解析与提醒时机。
+ *
+ * 服务端 Token 形如 `base64url(payload).signature`，payload 里 `expireAt` 为 Unix 秒；
+ * 也兼容三段式 JWT 的 `exp`。过期前 [WARN_BEFORE_SECONDS] 秒回调
+ * `onTokenPrivilegeWillExpire`，到期回调 `onRequestToken`。
+ */
+object TokenExpiry {
+    const val WARN_BEFORE_SECONDS = 30L
+
+    private val expRegex = Regex("\"(expireAt|exp)\"\\s*:\\s*(\\d+)")
+
+    /** 返回过期时间（Unix 秒）；解析不出或未设置（0）时返回 null。 */
+    fun expireAtSeconds(token: String): Long? {
+        val parts = token.trim().split('.')
+        val payloadPart = when (parts.size) {
+            2 -> parts[0]
+            3 -> parts[1]
+            else -> return null
+        }
+        val json = base64UrlDecode(payloadPart) ?: return null
+        val match = expRegex.find(json) ?: return null
+        val exp = match.groupValues[2].toLongOrNull() ?: return null
+        return exp.takeIf { it > 0 }
+    }
+
+    /** (提醒延迟 ms, 过期延迟 ms)。已过期时两者都为 0。 */
+    fun delaysMs(expireAtSeconds: Long, nowMs: Long): Pair<Long, Long> {
+        val expireDelay = (expireAtSeconds * 1000 - nowMs).coerceAtLeast(0)
+        val warnDelay = (expireDelay - WARN_BEFORE_SECONDS * 1000).coerceAtLeast(0)
+        return warnDelay to expireDelay
+    }
+
+    private const val ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"
+
+    internal fun base64UrlDecode(input: String): String? {
+        val clean = input.replace('+', '-').replace('/', '_').trimEnd('=')
+        val out = java.io.ByteArrayOutputStream()
+        var buffer = 0
+        var bits = 0
+        for (ch in clean) {
+            val v = ALPHABET.indexOf(ch)
+            if (v < 0) return null
+            buffer = (buffer shl 6) or v
+            bits += 6
+            if (bits >= 8) {
+                bits -= 8
+                out.write((buffer shr bits) and 0xFF)
+            }
+        }
+        return String(out.toByteArray(), Charsets.UTF_8)
+    }
+}
