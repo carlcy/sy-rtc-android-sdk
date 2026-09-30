@@ -233,6 +233,19 @@ class RtcEngine private constructor() {
         return impl?.isLocalVideoMuted() ?: false
     }
 
+    /**
+     * 选择前置 / 后置摄像头（与 iOS `useFrontCamera` 相同）。
+     * 未开摄像头时记录偏好；自定义采集或屏幕共享中返回 -1。
+     */
+    fun useFrontCamera(front: Boolean): Int {
+        return impl?.useFrontCamera(front) ?: -1
+    }
+
+    /** 本端最近一次 [setStreamExtraInfo] 的内容。 */
+    fun getStreamExtraInfo(): String {
+        return impl?.getStreamExtraInfo() ?: ""
+    }
+
     fun isRemoteAudioMuted(uid: String): Boolean {
         return impl?.isRemoteAudioMuted(uid) ?: false
     }
@@ -396,7 +409,7 @@ class RtcEngine private constructor() {
     }
 
     /**
-     * 获取网络类型
+     * 当前网络类型：wifi / cellular / ethernet / none / unknown（与 iOS 同名）。
      */
     fun getNetworkType(): String {
         return impl?.getNetworkType() ?: "unknown"
@@ -616,8 +629,9 @@ class RtcEngine private constructor() {
     }
 
     /**
-     * 通过频道信令广播本端流附加信息。未进房返回 -1。
-     * 对端收到 [RtcEventHandler.onStreamExtraInfoUpdated]，同时仍收到 [RtcEventHandler.onChannelMessage]。
+     * 通过频道信令广播本端流附加信息（`sy-extra:` 前缀，与 iOS 互通）。
+     * 未进房返回 -1（已保存，进房后补发），超过 1024 字节返回 -2。
+     * 对端只收到 [RtcEventHandler.onStreamExtraInfoUpdated]，不会进 [RtcEventHandler.onChannelMessage]。
      */
     fun setStreamExtraInfo(extra: String): Int {
         return impl?.setStreamExtraInfo(extra) ?: -1

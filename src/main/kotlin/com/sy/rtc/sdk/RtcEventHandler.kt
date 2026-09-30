@@ -238,8 +238,8 @@ open class RtcEventHandler {
     /**
      * 对端通过信令更新的流附加信息。
      *
-     * 这是频道消息里的 `stream-extra` 信封，不是 SFU 的流元数据。
-     * 同一条原文仍会先走 [onChannelMessage]。
+     * 这是 `sy-extra:` 前缀的频道消息（与 iOS 同格式），不是 SFU 的流元数据。
+     * 这类消息不会再回调 [onChannelMessage]。
      */
     open fun onStreamExtraInfoUpdated(uid: String, extra: String) {}
 
@@ -250,6 +250,12 @@ open class RtcEventHandler {
      * 原始字节（含前缀）仍会通过 [onStreamMessage] 给出。
      */
     open fun onSeiMessage(uid: String, streamId: Int, data: ByteArray) {}
+
+    /**
+     * 对端开关了自己的摄像头（`user-media` 信令，与 iOS `onUserMuteVideo` 相同）。
+     * 同时仍回调 [onRemoteVideoStateChanged]（reason `remote-mute`）。
+     */
+    open fun onUserMuteVideo(uid: String, muted: Boolean) {}
 }
 
 /**

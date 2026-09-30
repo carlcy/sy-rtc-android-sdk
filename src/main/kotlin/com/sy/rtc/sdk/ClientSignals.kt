@@ -268,6 +268,66 @@ class ReconnectTracker(private val maxAttempts: Int = 3) {
 
 data class StreamExtraPayload(val uid: String, val extra: String)
 
+/**
+ * Android / iOS / Flutter 共用的频道信令约定。两端互通靠它，改动必须三端同步。
+ *
+ * - 流附加信息：`channel-message`，正文以 [STREAM_EXTRA_PREFIX] 开头，其后是原文。
+ *   这类消息只回调 `onStreamExtraInfoUpdated`，不进 `onChannelMessage`。
+ * - 本端静音通知：信令类型 [USER_MEDIA_TYPE]，`data` 为 `{uid, audioMuted?, videoMuted?}`。
+ *   不是服务端强制静音（那是 `mute-audio`，回调 `onServerMuteAudio`）。
+ * - SEI 风格消息：DataChannel 二进制，前 5 字节为 `SYSEI`，见 [DataFrame]。
+ */
+object WireProtocol {
+    const val STREAM_EXTRA_PREFIX = "sy-extra:"
+    const val USER_MEDIA_TYPE = "user-media"
+    const val MAX_STREAM_EXTRA_BYTES = 1024
+
+    fun encodeStreamExtra(extra: String): String = STREAM_EXTRA_PREFIX + extra
+
+    fun decodeStreamExtra(message: String): String? =
+        if (message.startsWith(STREAM_EXTRA_PREFIX)) message.substring(STREAM_EXTRA_PREFIX.length) else null
+
+    /** 旧的 Android JSON 信封（`stream-extra` / `client-mute`），只收不发。 */
+    fun isLegacyEnvelope(message: String): Boolean =
+        StreamExtra.decode(message) != null || ClientMuteNotice.decode(message) != null
+
+    /** 是否为 SDK 保留的频道消息（不应回调 `onChannelMessage`）。 */
+    fun isReservedChannelMessage(message: String): Boolean =
+        decodeStreamExtra(message) != null || isLegacyEnvelope(message)
+
+    /** 解析 `user-media` 的 data。字段缺失时为 null。 */
+    fun decodeUserMedia(data: Map<String, Any?>): Pair<Boolean?, Boolean?> =
+        bool(data["audioMuted"]) to bool(data["videoMuted"])
+
+    private fun bool(value: Any?): Boolean? = when (value) {
+        is Boolean -> value
+        is Number -> value.toInt() != 0
+        is String -> when (value.lowercase()) {
+            "true", "1" -> true
+            "false", "0" -> false
+            else -> null
+        }
+        else -> null
+    }
+}
+
+/** 网络类型名字与 iOS `getNetworkType` 相同：wifi / cellular / ethernet / none / unknown。 */
+object NetworkTypes {
+    const val WIFI = "wifi"
+    const val CELLULAR = "cellular"
+    const val ETHERNET = "ethernet"
+    const val NONE = "none"
+    const val UNKNOWN = "unknown"
+
+    fun classify(connected: Boolean, wifi: Boolean, cellular: Boolean, ethernet: Boolean): String = when {
+        !connected -> NONE
+        wifi -> WIFI
+        ethernet -> ETHERNET
+        cellular -> CELLULAR
+        else -> UNKNOWN
+    }
+}
+
 data class ClientMutePayload(val uid: String, val media: String, val muted: Boolean)
 
 object StreamExtra {

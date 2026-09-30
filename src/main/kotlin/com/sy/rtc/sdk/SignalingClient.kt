@@ -169,6 +169,21 @@ internal class SignalingClient(
         send(message.toString())
     }
 
+    /** 本端静音状态，见 [WireProtocol.USER_MEDIA_TYPE]。只带传入的字段。 */
+    fun sendUserMedia(audioMuted: Boolean?, videoMuted: Boolean?) {
+        val message = JSONObject().apply {
+            put("type", WireProtocol.USER_MEDIA_TYPE)
+            put("channelId", channelId)
+            put("uid", uid)
+            put("data", JSONObject().apply {
+                put("uid", uid)
+                audioMuted?.let { put("audioMuted", it) }
+                videoMuted?.let { put("videoMuted", it) }
+            })
+        }
+        send(message.toString())
+    }
+
     fun sendLeave() {
         val message = JSONObject().apply {
             put("type", "leave")

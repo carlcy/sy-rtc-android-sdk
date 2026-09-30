@@ -196,22 +196,27 @@ Maven Central 是可选的正式仓库，需要 Owner 自己准备签名和 Cent
 | `join` / `leave` / `renewToken` | 进出频道；续期重连信令 |
 | `setClientRole` / `setChannelProfile` | `HOST` / `AUDIENCE` / `PUBLISHER` / `SUBSCRIBER`；场景需在 `join` 前设置 |
 | `RtcEngine.VERSION` | 常量 `3.2.0`，与 `VERSION`、Demo `versionName` 一致 |
-| `enableLocalAudio` / `muteLocalAudio` / `isLocalAudioMuted` | 本地音频。静音会通过信令通知对端 `onUserMuteAudio` |
+| `enableLocalAudio` / `muteLocalAudio` / `isLocalAudioMuted` | 本地音频。静音会通过信令 `user-media` 通知对端 `onUserMuteAudio`（与 iOS 互通） |
+| `muteLocalVideo` | 对端收到 `onUserMuteVideo(uid, muted)`（与 iOS 互通） |
+| `isRemoteAudioMuted` / `isRemoteVideoMuted` | 本机屏蔽了该路，或对端自己静音了，都返回 true |
 | `muteRemoteAudioStream` / `muteAllRemoteAudioStreams` | 停止播放该路远端音频（本机 `AudioTrack`），不是服务端强制断流 |
-| `enableVideo` / `setVideoQuality` / `switchCamera` / `setupLocalVideo` / `setupRemoteVideo` | 视频。`switchCamera` 在摄像头采集时切换前后摄 |
+| `enableVideo` / `setVideoQuality` / `switchCamera` / `setupLocalVideo` / `setupRemoteVideo` | 视频。`switchCamera` 在摄像头采集时切换前后摄；`useFrontCamera(front)` 指定前/后摄（未采集时记住，开摄像头时生效） |
 | `setEnableSpeakerphone` / `getAudioRoute` | 扬声器或听筒。路由回调 `onAudioRoutingChanged`：0 扬声器，1 耳机，2 蓝牙，3 听筒 |
 | `setBeautyEffectOptions` / `setVideoFrameProcessor` | 内置提亮作用于编码前的帧；自定义处理器会替换内置提亮 |
 | `startScreenCapture(intent, config)` | 需要 MediaProjection 授权。Android 10+ 自动启动 SDK 内置的 `mediaProjection` 前台服务 `ScreenCaptureService`（见下文），返回 0 表示已提交，开始采集时回调 `onLocalVideoStateChanged("screen_capturing")`，失败 `onError(1006)` |
 | `enableCustomVideoCapture` / `pushExternalVideoFrame` | 外部视频帧送入本地视频源 |
 | `enableAudioVolumeIndication` | 音量来自 PCM 或 WebRTC `audioLevel`，没有样本时为 0 |
 | `onNetworkQuality` | 本机 ICE RTT 与丢包估计。没有样本时是 `unknown`，不是 SFU 探测 |
-| `setStreamExtraInfo` | 信令广播附加信息，对端 `onStreamExtraInfoUpdated` |
+| `setStreamExtraInfo` / `getStreamExtraInfo` | 频道消息 `sy-extra:` 前缀广播（与 iOS 同一格式），UTF-8 最多 1024 字节，超出返回 -2；新成员进房会补发。对端 `onStreamExtraInfoUpdated`，本地 `getStreamExtraInfo(uid)` 取最近值 |
+| `getNetworkType` | `ConnectivityManager` 实时判断：`wifi` / `cellular` / `ethernet` / `none` / `unknown`（名称与 iOS 相同） |
 | `createDataStream` / `sendStreamMessage` / `sendSei` | DataChannel。`sendSei` 只是带前缀的数据通道消息，不是码流 SEI |
 | `RoomService.getToken` / `fetchToken` / `renewToken` | `POST /api/rtc/token` 与 `POST /api/rtc/token/renew`。4031/4032/4033 为 `RtcCredentialException` |
 | `RoomService.switchQualityTier` | `POST /api/rtc/quality/switch`，只认用户 JWT |
 | `setRoomAttribute` / `getRoomAttributes` / `deleteRoomAttribute` | `POST /api/rtc/channel/meta/set`、`get`、`delete`，只认用户 JWT |
 
 `audience` / `subscriber` 只关本地推流，不是 SFU 强制切断。
+
+**跨端约定**：静音用信令类型 `user-media`（`{uid, audioMuted?, videoMuted?}`），附加信息用频道消息 `sy-extra:<文本>`，SEI 用 DataChannel `SYSEI` 前缀。这些 SDK 保留消息不会回调 `onChannelMessage`。旧版 Android 的 `client-mute` / `stream-extra` JSON 仍能解析，但不再发送。
 
 ### 屏幕共享前台服务
 

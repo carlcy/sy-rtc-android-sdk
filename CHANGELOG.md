@@ -21,6 +21,9 @@
 
 ### 行为
 
+- 跨端互通：静音通知改用 iOS 同款信令 `user-media`，附加信息改用 `sy-extra:` 前缀频道消息；旧 JSON 仍可接收。SDK 保留消息不再触发 `onChannelMessage`
+- 新增 `onUserMuteVideo`、`useFrontCamera`、`getStreamExtraInfo`；`getNetworkType` 改为真实值（此前固定 `unknown`）；`isRemoteAudioMuted` / `isRemoteVideoMuted` 计入对端自己静音；`setStreamExtraInfo` 超过 1024 字节返回 -2
+
 - `renewToken` 在已进房时用新 Token 重连信令（不发 leave，不拆 PeerConnection）
 
 ## 3.1.0

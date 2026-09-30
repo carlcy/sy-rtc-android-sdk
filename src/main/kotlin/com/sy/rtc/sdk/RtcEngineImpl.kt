@@ -148,6 +148,11 @@ internal class RtcEngineImpl(
     private var allRemoteAudioMuted = false
     private var allRemoteVideoMuted = false
     private val remoteAudioMuted = ConcurrentHashMap<String, Boolean>()
+    /** 对端通过 user-media 通知的自身静音状态。 */
+    private val remoteSelfAudioMuted = ConcurrentHashMap<String, Boolean>()
+    private val remoteSelfVideoMuted = ConcurrentHashMap<String, Boolean>()
+    /** useFrontCamera 在摄像头启动前设置的偏好。 */
+    private var preferFrontCamera = true
     private var localPcmVolume = 0
     private var localPcmSeen = false
     private val remotePcmVolume = ConcurrentHashMap<String, Int>()
@@ -213,9 +218,41 @@ internal class RtcEngineImpl(
         return if (isJoined.get()) "connected" else "disconnected"
     }
 
+    /**
+     * 当前默认网络：wifi / cellular / ethernet / none / unknown（与 iOS 同名）。
+     * 需要 ACCESS_NETWORK_STATE（SDK manifest 已声明）。
+     */
     fun getNetworkType(): String {
-        // Android 端网络类型需要依赖 ConnectivityManager，这里先给可用的占位实现
-        return "unknown"
+        return try {
+            val cm = context.getSystemService(Context.CONNECTIVITY_SERVICE) as? android.net.ConnectivityManager
+                ?: return NetworkTypes.UNKNOWN
+            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.M) {
+                val network = cm.activeNetwork ?: return NetworkTypes.NONE
+                val caps = cm.getNetworkCapabilities(network) ?: return NetworkTypes.NONE
+                NetworkTypes.classify(
+                    connected = caps.hasCapability(android.net.NetworkCapabilities.NET_CAPABILITY_INTERNET),
+                    wifi = caps.hasTransport(android.net.NetworkCapabilities.TRANSPORT_WIFI),
+                    cellular = caps.hasTransport(android.net.NetworkCapabilities.TRANSPORT_CELLULAR),
+                    ethernet = caps.hasTransport(android.net.NetworkCapabilities.TRANSPORT_ETHERNET)
+                )
+            } else {
+                @Suppress("DEPRECATION")
+                val info = cm.activeNetworkInfo ?: return NetworkTypes.NONE
+                @Suppress("DEPRECATION")
+                NetworkTypes.classify(
+                    connected = info.isConnected,
+                    wifi = info.type == android.net.ConnectivityManager.TYPE_WIFI,
+                    cellular = info.type == android.net.ConnectivityManager.TYPE_MOBILE,
+                    ethernet = info.type == android.net.ConnectivityManager.TYPE_ETHERNET
+                )
+            }
+        } catch (e: SecurityException) {
+            Log.w(TAG, "缺少 ACCESS_NETWORK_STATE，无法读取网络类型", e)
+            NetworkTypes.UNKNOWN
+        } catch (e: Exception) {
+            Log.w(TAG, "读取网络类型失败", e)
+            NetworkTypes.UNKNOWN
+        }
     }
 
     // ==================== 音频采集控制（简化实现） ====================
@@ -558,6 +595,7 @@ internal class RtcEngineImpl(
                 if (uid != null) {
                     eventHandler?.onUserJoined(uid, 0)
                     if (uid != currentUid) {
+                        republishSideInfo()
                         ensurePeer(uid, channelId)
                         if (shouldInitiateOffer(currentUid, uid)) {
                             startOffer(uid, channelId)
@@ -578,6 +616,8 @@ internal class RtcEngineImpl(
                     remoteAudioTracks.remove(uid)
                     remotePcmVolume.remove(uid)
                     remotePcmSeen.remove(uid)
+                    remoteSelfAudioMuted.remove(uid)
+                    remoteSelfVideoMuted.remove(uid)
                     dataChannels.values.forEach { it.remove(uid)?.close() }
                     val viewId = videoViews[uid]
                     android.os.Handler(android.os.Looper.getMainLooper()).post {
@@ -592,9 +632,18 @@ internal class RtcEngineImpl(
             "channel-message" -> {
                 val fromUid = (data["uid"] as? String) ?: ""
                 val msg = (data["message"] as? String) ?: ""
-                eventHandler?.onChannelMessage(fromUid, msg)
-                if (fromUid != currentUid) {
-                    dispatchClientEnvelope(fromUid, msg)
+                if (WireProtocol.isReservedChannelMessage(msg)) {
+                    if (fromUid != currentUid) dispatchClientEnvelope(fromUid, msg)
+                } else {
+                    eventHandler?.onChannelMessage(fromUid, msg)
+                }
+            }
+            WireProtocol.USER_MEDIA_TYPE -> {
+                val fromUid = (data["uid"] as? String) ?: ""
+                if (fromUid.isNotEmpty() && fromUid != currentUid) {
+                    val (audioMuted, videoMuted) = WireProtocol.decodeUserMedia(data)
+                    audioMuted?.let { applyRemoteSelfMute(fromUid, "audio", it) }
+                    videoMuted?.let { applyRemoteSelfMute(fromUid, "video", it) }
                 }
             }
             "error" -> {
@@ -1044,12 +1093,14 @@ internal class RtcEngineImpl(
 
     fun isLocalVideoMuted(): Boolean = localVideoMuted
 
+    /** 本端听不到该用户：本端静音了他，或对端自己静音（user-media 通知）。与 iOS 相同。 */
     fun isRemoteAudioMuted(uid: String): Boolean {
-        return allRemoteAudioMuted || remoteAudioMuted[uid] == true
+        return allRemoteAudioMuted || remoteAudioMuted[uid] == true || remoteSelfAudioMuted[uid] == true
     }
 
+    /** 本端看不到该用户视频：本端静音了他，或对端自己关了视频。与 iOS 相同。 */
     fun isRemoteVideoMuted(uid: String): Boolean {
-        return allRemoteVideoMuted || videoMutedStates[uid] == true
+        return allRemoteVideoMuted || videoMutedStates[uid] == true || remoteSelfVideoMuted[uid] == true
     }
     
     fun muteRemoteAudioStream(uid: String, muted: Boolean) {
@@ -1439,7 +1490,7 @@ internal class RtcEngineImpl(
                 val deviceNames = cameraEnumerator.deviceNames
                 
                 if (deviceNames.isNotEmpty()) {
-                    val frontCameraName = deviceNames.find { cameraEnumerator.isFrontFacing(it) } ?: deviceNames[0]
+                    val frontCameraName = deviceNames.find { cameraEnumerator.isFrontFacing(it) == preferFrontCamera } ?: deviceNames[0]
                     usingFrontCamera = cameraEnumerator.isFrontFacing(frontCameraName)
                     videoCapturer = cameraEnumerator.createCapturer(frontCameraName, null) as? CameraVideoCapturer
                     val egl = eglBase?.eglBaseContext
@@ -1841,6 +1892,17 @@ internal class RtcEngineImpl(
         }
     }
 
+    /**
+     * 选择前置或后置摄像头。摄像头未启动时只记录偏好，启动时生效。
+     * 自定义采集或屏幕共享中返回 -1。
+     */
+    fun useFrontCamera(front: Boolean): Int {
+        preferFrontCamera = front
+        if (customVideoCapture || isScreenCapturing.get()) return -1
+        if (videoCapturer == null || usingFrontCamera == front) return 0
+        return switchCamera()
+    }
+
     fun switchCamera(): Int {
         if (customVideoCapture || isScreenCapturing.get()) return -1
         val capturer = videoCapturer ?: return -1
@@ -1848,6 +1910,7 @@ internal class RtcEngineImpl(
             capturer.switchCamera(object : CameraVideoCapturer.CameraSwitchHandler {
                 override fun onCameraSwitchDone(isFrontCamera: Boolean) {
                     usingFrontCamera = isFrontCamera
+                    preferFrontCamera = isFrontCamera
                     eventHandler?.onLocalVideoStateChanged(if (isFrontCamera) "front_camera" else "back_camera", "")
                 }
                 override fun onCameraSwitchError(errorDescription: String?) {
@@ -1862,12 +1925,19 @@ internal class RtcEngineImpl(
         }
     }
 
+    /**
+     * 广播流附加信息（`sy-extra:` 前缀的频道消息，与 iOS 同格式）。
+     * 超过 1024 字节返回 -2；未进房返回 -1（已保存，进房后对新成员补发）。
+     */
     fun setStreamExtraInfo(extra: String): Int {
+        if (extra.toByteArray(Charsets.UTF_8).size > WireProtocol.MAX_STREAM_EXTRA_BYTES) return -2
         streamExtraInfo = extra
         if (!isJoined.get()) return -1
-        signalingClient?.sendChannelMessage(StreamExtra.encode(currentUid ?: "", extra))
+        signalingClient?.sendChannelMessage(WireProtocol.encodeStreamExtra(extra))
         return 0
     }
+
+    fun getStreamExtraInfo(): String = streamExtraInfo
     
     fun takeSnapshot(uid: String, filePath: String) {
         Log.d(TAG, "视频截图: uid=$uid, path=$filePath")
@@ -2436,31 +2506,49 @@ internal class RtcEngineImpl(
 
     private fun publishClientMute(media: String, muted: Boolean) {
         if (!isJoined.get()) return
-        signalingClient?.sendChannelMessage(ClientMuteNotice.encode(currentUid ?: "", media, muted))
+        if (media == "audio") {
+            signalingClient?.sendUserMedia(audioMuted = muted, videoMuted = null)
+        } else {
+            signalingClient?.sendUserMedia(audioMuted = null, videoMuted = muted)
+        }
+    }
+
+    /** 新成员进房时补发本端附加信息和静音状态，与 iOS 行为一致。 */
+    private fun republishSideInfo() {
+        if (!isJoined.get()) return
+        if (streamExtraInfo.isNotEmpty()) {
+            signalingClient?.sendChannelMessage(WireProtocol.encodeStreamExtra(streamExtraInfo))
+        }
+        val audioMuted = localAudioMuted || !clientRole.canPublish()
+        val videoMuted = localVideoMuted || !clientRole.canPublish()
+        if (audioMuted || videoMuted) {
+            signalingClient?.sendUserMedia(audioMuted = audioMuted, videoMuted = videoMuted)
+        }
+    }
+
+    private fun applyRemoteSelfMute(uid: String, media: String, muted: Boolean) {
+        if (media == "audio") {
+            remoteSelfAudioMuted[uid] = muted
+            eventHandler?.onUserMuteAudio(uid, muted)
+            eventHandler?.onRemoteAudioStateChanged(uid, if (muted) "muted" else "decoding", "remote-mute", 0)
+        } else if (media == "video") {
+            remoteSelfVideoMuted[uid] = muted
+            eventHandler?.onUserMuteVideo(uid, muted)
+            eventHandler?.onRemoteVideoStateChanged(uid, if (muted) "muted" else "decoding", "remote-mute", 0)
+        }
     }
 
     private fun dispatchClientEnvelope(fromUid: String, message: String) {
+        WireProtocol.decodeStreamExtra(message)?.let { extra ->
+            eventHandler?.onStreamExtraInfoUpdated(fromUid, extra)
+            return
+        }
+        // 旧 Android JSON 信封，只收不发。
         StreamExtra.decode(message)?.let { payload ->
             eventHandler?.onStreamExtraInfoUpdated(payload.uid.ifBlank { fromUid }, payload.extra)
         }
         ClientMuteNotice.decode(message)?.let { payload ->
-            val uid = payload.uid.ifBlank { fromUid }
-            if (payload.media == "audio") {
-                eventHandler?.onUserMuteAudio(uid, payload.muted)
-                eventHandler?.onRemoteAudioStateChanged(
-                    uid,
-                    if (payload.muted) "muted" else "decoding",
-                    "remote-mute",
-                    0
-                )
-            } else if (payload.media == "video") {
-                eventHandler?.onRemoteVideoStateChanged(
-                    uid,
-                    if (payload.muted) "muted" else "decoding",
-                    "remote-mute",
-                    0
-                )
-            }
+            applyRemoteSelfMute(payload.uid.ifBlank { fromUid }, payload.media, payload.muted)
         }
     }
 
