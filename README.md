@@ -206,7 +206,7 @@ Maven Central 是可选的正式仓库，需要 Owner 自己准备签名和 Cent
 | `startScreenCapture(intent, config)` | 需要 MediaProjection 授权。Android 10+ 自动启动 SDK 内置的 `mediaProjection` 前台服务 `ScreenCaptureService`（见下文），返回 0 表示已提交，开始采集时回调 `onLocalVideoStateChanged("screen_capturing")`，失败 `onError(1006)` |
 | `enableCustomVideoCapture` / `pushExternalVideoFrame` | 外部视频帧送入本地视频源 |
 | `enableAudioVolumeIndication` | 音量来自 PCM 或 WebRTC `audioLevel`，没有样本时为 0 |
-| `onNetworkQuality` | 本机 ICE RTT 与丢包估计。没有样本时是 `unknown`，不是 SFU 探测 |
+| `onNetworkQuality` | 本机 ICE RTT 与丢包估计，档位见下文「网络质量档位」。没有样本时是 `unknown`，不是 SFU 探测 |
 | `setStreamExtraInfo` / `getStreamExtraInfo` | 频道消息 `sy-extra:` 前缀广播（与 iOS 同一格式），UTF-8 最多 1024 字节，超出返回 -2；新成员进房会补发。对端 `onStreamExtraInfoUpdated`，本地 `getStreamExtraInfo(uid)` 取最近值 |
 | `getNetworkType` | `ConnectivityManager` 实时判断：`wifi` / `cellular` / `ethernet` / `none` / `unknown`（名称与 iOS 相同） |
 | `createDataStream` / `sendStreamMessage` / `sendSei` | DataChannel。`sendSei` 只是带前缀的数据通道消息，不是码流 SEI |
@@ -217,6 +217,18 @@ Maven Central 是可选的正式仓库，需要 Owner 自己准备签名和 Cent
 `audience` / `subscriber` 只关本地推流，不是 SFU 强制切断。
 
 **跨端约定**：静音用信令类型 `user-media`（`{uid, audioMuted?, videoMuted?}`），附加信息用频道消息 `sy-extra:<文本>`，SEI 用 DataChannel `SYSEI` 前缀。这些 SDK 保留消息不会回调 `onChannelMessage`。旧版 Android 的 `client-mute` / `stream-extra` JSON 仍能解析，但不再发送。
+
+### 网络质量档位
+
+RTT 和丢包各自落档，取较差的一档；没有样本时为 `unknown`。阈值参考即构 Express 的分级，Android 与 iOS 完全相同（两端各有同一张表的单测）。 3.2.0 起名字与 iOS 统一：原 `medium` 改为 `poor`，`die` 改为 `down`（`NetworkQualityEstimator.MEDIUM` / `DIE` 仍保留为已弃用别名）。`onRtcStats` 同时给 `lossPercent`（0–100）和 `packetLossRate`（0–1）。
+
+| 档位 | RTT (ms) | 丢包 |
+|---|---|---|
+| `excellent` | < 100 | < 1% |
+| `good` | < 200 | < 3% |
+| `poor` | < 400 | < 8% |
+| `bad` | < 800 | < 20% |
+| `down` | ≥ 800 | ≥ 20% |
 
 ### 屏幕共享前台服务
 

@@ -19,32 +19,37 @@ class ClientSignalsTest {
 
     @Test
     fun networkQualityUsesSamplesOnly() {
-        assertEquals(
-            NetworkQualityEstimator.UNKNOWN,
-            NetworkQualityEstimator.fromRttAndLoss(null, null)
-        )
-        assertEquals(
-            NetworkQualityEstimator.EXCELLENT,
-            NetworkQualityEstimator.fromRttAndLoss(20, 0.0)
-        )
-        assertEquals(
-            NetworkQualityEstimator.GOOD,
-            NetworkQualityEstimator.fromRttAndLoss(160, 0.0)
-        )
-        assertEquals(
-            NetworkQualityEstimator.MEDIUM,
-            NetworkQualityEstimator.fromRttAndLoss(20, 8.0)
-        )
-        assertEquals(
-            NetworkQualityEstimator.BAD,
-            NetworkQualityEstimator.fromRttAndLoss(500, 1.0)
-        )
-        assertEquals(
-            NetworkQualityEstimator.DIE,
-            NetworkQualityEstimator.fromRttAndLoss(40, 30.0)
-        )
+        assertEquals(NetworkQualityEstimator.UNKNOWN, NetworkQualityEstimator.fromRttAndLoss(null, null))
         assertEquals(0, NetworkQualityEstimator.toRank(NetworkQualityEstimator.UNKNOWN))
         assertEquals(1, NetworkQualityEstimator.toRank(NetworkQualityEstimator.EXCELLENT))
+        assertEquals(5, NetworkQualityEstimator.toRank("die")) // 旧名仍能比较
+    }
+
+    /** 与 iOS SyRtcNetworkQualityTests 同一张表，两端必须一致。 */
+    @Test
+    fun networkQualityThresholdsMatchIos() {
+        val cases = listOf(
+            // rttMs, lossRate(0-1), expected
+            Triple(20.0, 0.0, "excellent"),
+            Triple(99.0, 0.009, "excellent"),
+            Triple(100.0, 0.0, "good"),
+            Triple(20.0, 0.01, "good"),
+            Triple(199.0, 0.029, "good"),
+            Triple(200.0, 0.0, "poor"),
+            Triple(20.0, 0.03, "poor"),
+            Triple(400.0, 0.0, "bad"),
+            Triple(20.0, 0.08, "bad"),
+            Triple(800.0, 0.0, "down"),
+            Triple(20.0, 0.20, "down"),
+            Triple(null, 0.5, "down"),
+            Triple(150.0, null, "good"),
+        )
+        for ((rtt, loss, expected) in cases) {
+            assertEquals("rtt=$rtt loss=$loss", expected, NetworkQualityEstimator.fromRttAndLossRate(rtt, loss))
+        }
+        assertEquals("poor", NetworkQualityEstimator.fromRttAndLoss(20, 3.0))
+        @Suppress("DEPRECATION")
+        assertEquals(NetworkQualityEstimator.POOR, NetworkQualityEstimator.MEDIUM)
     }
 
     @Test
@@ -91,7 +96,7 @@ class ClientSignalsTest {
         assertEquals(4000L, sample.bytesSent)
         assertEquals(1000L, sample.bytesReceived)
         assertEquals(
-            NetworkQualityEstimator.GOOD,
+            NetworkQualityEstimator.POOR,
             NetworkQualityEstimator.fromRttAndLoss(sample.rttMs, sample.lossPercent)
         )
     }

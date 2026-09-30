@@ -2767,7 +2767,10 @@ internal class RtcEngineImpl(
             eventHandler?.onNetworkQuality("", quality, quality)
             val stats = linkedMapOf<String, Any?>("uid" to uid, "quality" to quality)
             sample.rttMs?.let { stats["rttMs"] = it }
-            sample.lossPercent?.let { stats["lossPercent"] = it }
+            sample.lossPercent?.let {
+                stats["lossPercent"] = it
+                stats["packetLossRate"] = it / 100.0
+            }
             tx?.let { stats["txBitrate"] = it }
             rx?.let { stats["rxBitrate"] = it }
             if (stats.size > 2) eventHandler?.onRtcStats(stats)

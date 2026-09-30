@@ -22,37 +22,69 @@ object AudioRoute {
     }
 }
 
+/**
+ * 网络质量档位。Android 与 iOS（`SyRtcNetworkQuality`）使用同一套名字和阈值，改动需两端同步。
+ *
+ * 名字：`excellent` / `good` / `poor` / `bad` / `down` / `unknown`（与 Flutter `SyNetworkQualityLevel` 相同）。
+ * 阈值参考即构 Express 的质量分级：取 RTT 与丢包各自落入的档位中较差的一个。
+ *
+ * | 档位 | RTT (ms) | 丢包 |
+ * |---|---|---|
+ * | excellent | < 100 | < 1% |
+ * | good | < 200 | < 3% |
+ * | poor | < 400 | < 8% |
+ * | bad | < 800 | < 20% |
+ * | down | ≥ 800 | ≥ 20% |
+ *
+ * 没有 RTT 也没有丢包样本时为 `unknown`。
+ */
 object NetworkQualityEstimator {
     const val UNKNOWN = "unknown"
     const val EXCELLENT = "excellent"
     const val GOOD = "good"
-    const val MEDIUM = "medium"
+    const val POOR = "poor"
     const val BAD = "bad"
-    const val DIE = "die"
+    const val DOWN = "down"
 
-    /**
-     * 没有 RTT 也没有丢包样本时返回 [UNKNOWN]，不把缺数据报成 excellent。
-     * [lossPercent] 为 0–100。
-     */
-    fun fromRttAndLoss(rttMs: Int?, lossPercent: Double?): String {
-        if (rttMs == null && lossPercent == null) return UNKNOWN
-        val loss = lossPercent ?: 0.0
-        val rtt = rttMs ?: 0
+    @Deprecated("3.2.0 起与 iOS 统一为 poor", ReplaceWith("POOR"))
+    const val MEDIUM = POOR
+    @Deprecated("3.2.0 起与 iOS 统一为 down", ReplaceWith("DOWN"))
+    const val DIE = DOWN
+
+    const val RTT_EXCELLENT_MS = 100
+    const val RTT_GOOD_MS = 200
+    const val RTT_POOR_MS = 400
+    const val RTT_BAD_MS = 800
+    const val LOSS_EXCELLENT = 0.01
+    const val LOSS_GOOD = 0.03
+    const val LOSS_POOR = 0.08
+    const val LOSS_BAD = 0.20
+
+    /** [lossPercent] 为 0–100（兼容旧调用）。 */
+    fun fromRttAndLoss(rttMs: Int?, lossPercent: Double?): String =
+        fromRttAndLossRate(rttMs?.toDouble(), lossPercent?.let { it / 100.0 })
+
+    /** [lossRate] 为 0–1，与 iOS `SyRtcNetworkQuality.level(rttMs:packetLossRatio:)` 同签名语义。 */
+    fun fromRttAndLossRate(rttMs: Double?, lossRate: Double?): String {
+        if (rttMs == null && lossRate == null) return UNKNOWN
+        val rtt = (rttMs ?: 0.0).coerceAtLeast(0.0)
+        val loss = (lossRate ?: 0.0).coerceIn(0.0, 1.0)
         return when {
-            loss >= 30.0 || rtt >= 1000 -> DIE
-            loss >= 15.0 || rtt >= 500 -> BAD
-            loss >= 8.0 || rtt >= 300 -> MEDIUM
-            loss >= 3.0 || rtt >= 150 -> GOOD
+            loss >= LOSS_BAD || rtt >= RTT_BAD_MS -> DOWN
+            loss >= LOSS_POOR || rtt >= RTT_POOR_MS -> BAD
+            loss >= LOSS_GOOD || rtt >= RTT_GOOD_MS -> POOR
+            loss >= LOSS_EXCELLENT || rtt >= RTT_EXCELLENT_MS -> GOOD
             else -> EXCELLENT
         }
     }
 
+    /** 0 unknown，1 excellent … 5 down。两端相同。 */
     fun toRank(quality: String): Int = when (quality) {
         EXCELLENT -> 1
         GOOD -> 2
-        MEDIUM -> 3
+        POOR, "medium" -> 3
         BAD -> 4
-        DIE -> 5
+        DOWN, "die" -> 5
         else -> 0
     }
 }
