@@ -169,6 +169,8 @@ internal class RtcEngineImpl(
     private var streamExtraInfo: String = ""
     private var statsRunnable: Runnable? = null
     private val lastBytesSent = ConcurrentHashMap<String, Long>()
+    private val lastInboundLost = ConcurrentHashMap<String, Long>()
+    private val lastInboundRecv = ConcurrentHashMap<String, Long>()
     private val lastBytesRecv = ConcurrentHashMap<String, Long>()
     private val lastStatsMs = ConcurrentHashMap<String, Long>()
     private var lastNetwork = NetworkQuality(0, 0, 0, 0)
@@ -2911,7 +2913,7 @@ internal class RtcEngineImpl(
                 } else {
                     // 一轮收齐所有对端后再回调：本端 uid = 最差一档，然后逐个对端。与 iOS 相同。
                     val pending = java.util.concurrent.atomic.AtomicInteger(peers.size)
-                    val round = ConcurrentHashMap<String, String>()
+                    val round = ConcurrentHashMap<String, Pair<String, String>>()
                     val finishOne = {
                         if (pending.decrementAndGet() == 0) {
                             val snapshot = HashMap(round)
@@ -2929,7 +2931,7 @@ internal class RtcEngineImpl(
                             }
                         } catch (e: Exception) {
                             Log.w(TAG, "getStats 失败", e)
-                            round[uid] = NetworkQualityEstimator.UNKNOWN
+                            round[uid] = NetworkQualityEstimator.UNKNOWN to NetworkQualityEstimator.UNKNOWN
                             finishOne()
                         }
                     }
@@ -2946,18 +2948,22 @@ internal class RtcEngineImpl(
         statsRunnable = null
         lastBytesSent.clear()
         lastBytesRecv.clear()
+        lastInboundLost.clear()
+        lastInboundRecv.clear()
         lastStatsMs.clear()
     }
 
-    private fun emitNetworkQualityRound(round: Map<String, String>) {
+    /** 本端 uid：上行取各对端上行最差、下行取各对端下行最差；再逐个对端 (tx, rx)。与 iOS 相同。 */
+    private fun emitNetworkQualityRound(round: Map<String, Pair<String, String>>) {
         if (!isJoined.get()) return
-        val local = NetworkQualityEstimator.worst(round.values)
-        eventHandler?.onNetworkQuality(currentUid ?: "", local, local)
-        round.toSortedMap().forEach { (uid, q) -> eventHandler?.onNetworkQuality(uid, q, q) }
+        val localTx = NetworkQualityEstimator.worst(round.values.map { it.first })
+        val localRx = NetworkQualityEstimator.worst(round.values.map { it.second })
+        eventHandler?.onNetworkQuality(currentUid ?: "", localTx, localRx)
+        round.toSortedMap().forEach { (uid, q) -> eventHandler?.onNetworkQuality(uid, q.first, q.second) }
     }
 
     /** 解析一次对端统计，回调 onRtcStats，返回该链路质量档位。 */
-    private fun handleStatsReport(uid: String, report: RTCStatsReport): String {
+    private fun handleStatsReport(uid: String, report: RTCStatsReport): Pair<String, String> {
         val records = report.statsMap.values.map { stat -> StatRecord(stat.type, stat.members) }
         val sample = StatsParser.parse(records)
         val now = System.currentTimeMillis()
@@ -2966,15 +2972,26 @@ internal class RtcEngineImpl(
         sample.bytesSent?.let { lastBytesSent[uid] = it }
         sample.bytesReceived?.let { lastBytesRecv[uid] = it }
         lastStatsMs[uid] = now
-        val quality = NetworkQualityEstimator.fromRttAndLoss(sample.rttMs, sample.lossPercent)
-        val rank = NetworkQualityEstimator.toRank(quality)
-        lastNetwork = NetworkQuality(rank, rank, (tx ?: 0L).coerceAtMost(Int.MAX_VALUE.toLong()).toInt(), (rx ?: 0L).coerceAtMost(Int.MAX_VALUE.toLong()).toInt())
+        val rxLoss = LinkQuality.intervalLossRate(
+            lastInboundLost[uid], lastInboundRecv[uid], sample.inboundPacketsLost, sample.inboundPacketsReceived,
+        )
+        sample.inboundPacketsLost?.let { lastInboundLost[uid] = it }
+        sample.inboundPacketsReceived?.let { lastInboundRecv[uid] = it }
+        val txQuality = LinkQuality.tx(sample.rttMs, sample.outboundLossRate)
+        val rxQuality = LinkQuality.rx(rxLoss, sample.jitterMs)
+        val quality = NetworkQualityEstimator.worst(listOf(txQuality, rxQuality))
+        lastNetwork = NetworkQuality(NetworkQualityEstimator.toRank(txQuality), NetworkQualityEstimator.toRank(rxQuality), (tx ?: 0L).coerceAtMost(Int.MAX_VALUE.toLong()).toInt(), (rx ?: 0L).coerceAtMost(Int.MAX_VALUE.toLong()).toInt())
         if (!remotePcmSeen.contains(uid)) {
             sample.audioLevel?.let { remotePcmVolume[uid] = VolumeMeter.fromUnitInterval(it) }
         }
         mainHandler.post {
             if (!isJoined.get()) return@post
-            val stats = linkedMapOf<String, Any?>("uid" to uid, "quality" to quality)
+            val stats = linkedMapOf<String, Any?>(
+                "uid" to uid, "quality" to quality, "txQuality" to txQuality, "rxQuality" to rxQuality,
+            )
+            sample.outboundLossRate?.let { stats["txPacketLossRate"] = it }
+            rxLoss?.let { stats["rxPacketLossRate"] = it }
+            sample.jitterMs?.let { stats["jitterMs"] = it }
             sample.rttMs?.let { stats["rttMs"] = it }
             sample.lossPercent?.let {
                 stats["lossPercent"] = it
@@ -2982,9 +2999,9 @@ internal class RtcEngineImpl(
             }
             tx?.let { stats["txBitrate"] = it }
             rx?.let { stats["rxBitrate"] = it }
-            if (stats.size > 2) eventHandler?.onRtcStats(stats)
+            if (stats.size > 4) eventHandler?.onRtcStats(stats)
         }
-        return quality
+        return txQuality to rxQuality
     }
 
     private fun renegotiate(remoteUid: String) {

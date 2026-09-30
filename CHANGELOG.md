@@ -2,6 +2,7 @@
 
 ## 未发布
 
+- 网络质量上下行分开：`onNetworkQuality` 的 tx = RTT + 上行丢包（remote-inbound-rtp），rx = 本周期下行丢包 + 抖动；本端 uid 分别取各对端最差。新增 `LinkQuality`，`onRtcStats` 新增 `txQuality` / `rxQuality` / `txPacketLossRate` / `rxPacketLossRate` / `jitterMs`。与 iOS 相同。
 - Token 过期提醒去重：本地定时器与服务端推送（`token-privilege-will-expire` / `token-expired`，后端本轮新增）每个 Token 只回调一次；按 `data.expireAt` 忽略旧 Token 的迟到推送。新增 `TokenExpiryDedupe`。
 - 本地录音：移除名不副实的 `mp3`（实际输出 AMR-NB），改为报 `onError(1000)`；支持 `aac`（.m4a）与 `wav`。频道内改为录 WebRTC 管线里的 PCM 并混入远端声音（`includeLocal` / `includeRemote`），不再另开麦克风（此前通话中常录成静音）。见 README「本地录音」。
 - 实现 `onFirstRemoteVideoDecoded` / `onFirstRemoteVideoFrame` / `onVideoSizeChanged`（此前 Android 从不回调）：远端视频轨常驻 sink，首帧回调前两者，首帧及之后宽高或旋转变化回调 `onVideoSizeChanged`。新增 `onFirstLocalVideoFrame(width, height, elapsed)`，换轨（摄像头 / 屏幕 / 自定义采集）后各一次。规则见 `VideoFrameTracker`，与 iOS 相同。

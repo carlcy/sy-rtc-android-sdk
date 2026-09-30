@@ -112,7 +112,14 @@ data class TransportSample(
     val lossPercent: Double?,
     val audioLevel: Double?,
     val bytesSent: Long?,
-    val bytesReceived: Long?
+    val bytesReceived: Long?,
+    /** 上行丢包率 0–1：对端回报的 `remote-inbound-rtp.fractionLost`（多路取最大）。 */
+    val outboundLossRate: Double? = null,
+    /** 下行累计丢包 / 收包：各 `inbound-rtp` 的 `packetsLost` / `packetsReceived` 之和。 */
+    val inboundPacketsLost: Long? = null,
+    val inboundPacketsReceived: Long? = null,
+    /** 下行抖动（ms）：各 `inbound-rtp.jitter` 取最大。 */
+    val jitterMs: Double? = null,
 )
 
 object StatsParser {
@@ -124,6 +131,11 @@ object StatsParser {
         var bytesReceived = 0L
         var sawSent = false
         var sawRecv = false
+        var outboundLoss: Double? = null
+        var inLost = 0L
+        var inRecv = 0L
+        var sawInPackets = false
+        var jitterMs: Double? = null
 
         for (record in records) {
             val members = record.members
@@ -140,7 +152,11 @@ object StatsParser {
                     if (rttMs == null) {
                         secondsToMs(members["roundTripTime"])?.let { rttMs = it }
                     }
-                    fractionToPercent(members["fractionLost"])?.let { lossPercent = it }
+                    fractionToPercent(members["fractionLost"])?.let {
+                        lossPercent = it
+                        val rate = it / 100.0
+                        outboundLoss = maxOf(outboundLoss ?: 0.0, rate)
+                    }
                 }
                 "inbound-rtp" -> {
                     asLong(members["bytesReceived"])?.let {
@@ -149,6 +165,16 @@ object StatsParser {
                     }
                     if (isAudio(members)) {
                         asDouble(members["audioLevel"])?.let { audioLevel = it }
+                    }
+                    val lostN = asLong(members["packetsLost"])
+                    val recvN = asLong(members["packetsReceived"])
+                    if (lostN != null && recvN != null) {
+                        inLost += lostN.coerceAtLeast(0)
+                        inRecv += recvN.coerceAtLeast(0)
+                        sawInPackets = true
+                    }
+                    asDouble(members["jitter"])?.takeIf { it >= 0 }?.let { j ->
+                        jitterMs = maxOf(jitterMs ?: 0.0, j * 1000.0)
                     }
                     if (lossPercent == null) {
                         val lost = asDouble(members["packetsLost"])
@@ -175,7 +201,11 @@ object StatsParser {
             lossPercent = lossPercent,
             audioLevel = audioLevel,
             bytesSent = if (sawSent) bytesSent else null,
-            bytesReceived = if (sawRecv) bytesReceived else null
+            bytesReceived = if (sawRecv) bytesReceived else null,
+            outboundLossRate = outboundLoss,
+            inboundPacketsLost = if (sawInPackets) inLost else null,
+            inboundPacketsReceived = if (sawInPackets) inRecv else null,
+            jitterMs = jitterMs,
         )
     }
 
@@ -209,6 +239,55 @@ object StatsParser {
         val raw = asDouble(value) ?: return null
         if (raw < 0) return null
         return if (raw <= 1.0) raw * 100.0 else raw
+    }
+}
+
+/**
+ * 上下行分开评估，阈值与 [NetworkQualityEstimator] 相同。与 iOS `SyRtcLinkQuality` 相同。
+ *
+ * - 上行 tx：RTT + 上行丢包（对端 `remote-inbound-rtp.fractionLost`）。
+ * - 下行 rx：本统计周期的下行丢包（`inbound-rtp` 丢包 / 收包增量）+ 抖动。
+ *   抖动分档：excellent <30ms，good <50ms，poor <100ms，bad <200ms，其余 down。
+ */
+object LinkQuality {
+    const val JITTER_EXCELLENT_MS = 30.0
+    const val JITTER_GOOD_MS = 50.0
+    const val JITTER_POOR_MS = 100.0
+    const val JITTER_BAD_MS = 200.0
+
+    fun tx(rttMs: Int?, outboundLossRate: Double?): String =
+        NetworkQualityEstimator.fromRttAndLossRate(rttMs?.toDouble(), outboundLossRate)
+
+    fun rx(inboundLossRate: Double?, jitterMs: Double?): String {
+        if (inboundLossRate == null && jitterMs == null) return NetworkQualityEstimator.UNKNOWN
+        val byLoss = inboundLossRate?.let { NetworkQualityEstimator.fromRttAndLossRate(null, it) }
+        val byJitter = jitterMs?.let { j ->
+            when {
+                j >= JITTER_BAD_MS -> NetworkQualityEstimator.DOWN
+                j >= JITTER_POOR_MS -> NetworkQualityEstimator.BAD
+                j >= JITTER_GOOD_MS -> NetworkQualityEstimator.POOR
+                j >= JITTER_EXCELLENT_MS -> NetworkQualityEstimator.GOOD
+                else -> NetworkQualityEstimator.EXCELLENT
+            }
+        }
+        return NetworkQualityEstimator.worst(listOfNotNull(byLoss, byJitter))
+    }
+
+    /**
+     * 本周期下行丢包率：累计值的增量。没有上一轮时用累计值；本周期没有新包时返回 null（无样本）。
+     * 计数器回退（重协商后重置）时按没有上一轮处理。
+     */
+    fun intervalLossRate(prevLost: Long?, prevReceived: Long?, lost: Long?, received: Long?): Double? {
+        if (lost == null || received == null) return null
+        var dLost = lost
+        var dRecv = received
+        if (prevLost != null && prevReceived != null && lost >= prevLost && received >= prevReceived) {
+            dLost = lost - prevLost
+            dRecv = received - prevReceived
+        }
+        val total = dLost + dRecv
+        if (total <= 0) return null
+        return (dLost.toDouble() / total).coerceIn(0.0, 1.0)
     }
 }
 

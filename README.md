@@ -280,7 +280,11 @@ RTT 和丢包各自落档，取较差的一档；没有样本时为 `unknown`。
 | `bad` | < 800 | < 20% |
 | `down` | ≥ 800 | ≥ 20% |
 
-**回调方式（与 iOS 相同）**：每 2 秒一轮，先 `onNetworkQuality(本端 uid, q, q)`，q 为所有对端链路中最差的一档（unknown 不计入）；再每个对端 `onNetworkQuality(对端 uid, q, q)`。没有对端时只回调本端 `unknown`。3.2.0 及之前 Android 按对端逐个回调，并且每次都再用 uid `""` 回调一次该对端的质量。tx / rx 目前相同。
+**上下行分开（与 iOS 相同，`LinkQuality`）**：
+- 上行 `txQuality`：RTT + 上行丢包（对端回报的 `remote-inbound-rtp.fractionLost`），用上表。
+- 下行 `rxQuality`：本统计周期的下行丢包（`inbound-rtp` 丢包 / 收包增量，用上表丢包列）+ 抖动（`inbound-rtp.jitter`：excellent <30ms、good <50ms、poor <100ms、bad <200ms、其余 down），取较差。
+
+**回调方式（与 iOS 相同）**：每 2 秒一轮，先 `onNetworkQuality(本端 uid, tx, rx)`，tx / rx 分别为所有对端链路中上行 / 下行最差的一档（unknown 不计入）；再每个对端 `onNetworkQuality(对端 uid, tx, rx)`。没有对端时只回调本端 `unknown`。`onRtcStats` 另给 `txQuality` / `rxQuality` / `txPacketLossRate` / `rxPacketLossRate` / `jitterMs`，`quality` 为两者较差。3.2.0 及之前 tx 与 rx 取同一值。
 
 ### 屏幕共享前台服务
 
