@@ -3,7 +3,7 @@
 依赖与客户工程相同，写坐标和版本，不下载、不解压 AAR。
 
 ```gradle
-implementation 'com.github.carlcy:sy-rtc-android-sdk:v3.2.0'
+implementation 'com.github.carlcy:sy-rtc-android-sdk:v3.2.2'
 ```
 
 版本在 `gradle.properties` 的 `sdkVersion`。仓库是 JitPack；本机若已执行过仓库根目录的 `./gradlew publishToMavenLocal`，会优先用这份本地包（坐标字符串不变）。

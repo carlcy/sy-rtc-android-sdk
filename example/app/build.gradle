@@ -12,7 +12,7 @@ android {
         minSdk 24
         targetSdk 35
         versionCode 1
-        versionName "3.2.0"
+        versionName "3.2.2"
     }
 
     buildTypes {
@@ -42,7 +42,7 @@ android {
 }
 
 def useLocalSdk = providers.gradleProperty("useLocalSdk").orElse("false").get() == "true"
-def sdkVersion = providers.gradleProperty("sdkVersion").orElse("v3.2.0").get()
+def sdkVersion = providers.gradleProperty("sdkVersion").orElse("v3.2.2").get()
 
 dependencies {
     implementation 'androidx.core:core-ktx:1.12.0'

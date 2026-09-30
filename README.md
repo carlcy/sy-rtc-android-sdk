@@ -2,7 +2,7 @@
 
 实时音视频 Android SDK（Kotlin / Java）。控制面是 SY 的 `rtc-backend-go`，媒体层是端侧 WebRTC。对齐即构 Express 的是**进房、角色、信令**这条主路径，不是 ZegoExpress 全 API。
 
-当前版本：**3.2.0**（JitPack tag `v3.2.0`）。
+当前版本：**3.2.2**（JitPack tag `v3.2.2`）。
 
 ## 快速开始
 
@@ -11,7 +11,7 @@
 | 步骤 | 即构 ZEGO Express | SY RTC |
 |------|-------------------|--------|
 | 仓库 | `maven { url 'https://maven.zego.im' }` | `maven { url 'https://jitpack.io' }` |
-| 依赖 | `implementation 'im.zego:express-video:x.y.z'` | `implementation 'com.github.carlcy:sy-rtc-android-sdk:v3.2.0'` |
+| 依赖 | `implementation 'im.zego:express-video:x.y.z'` | `implementation 'com.github.carlcy:sy-rtc-android-sdk:v3.2.2'` |
 | 初始化 | `ZegoExpressEngine.createEngine` | `RtcEngine.create()` + `init(appId, context)` |
 | 鉴权 | AppSign 或 Token | 业务后端用 AppSecret 换 Token，客户端只拿字符串 |
 | 进房 | `loginRoom` | `join(channelId, uid, token)` |
@@ -52,7 +52,7 @@ AGP 低于 7.1 时，改写到根 `build.gradle` 的 `allprojects.repositories`�
 
 ```gradle
 dependencies {
-    implementation 'com.github.carlcy:sy-rtc-android-sdk:v3.2.0'
+    implementation 'com.github.carlcy:sy-rtc-android-sdk:v3.2.2'
 }
 ```
 
@@ -60,11 +60,11 @@ Kotlin DSL：
 
 ```kotlin
 dependencies {
-    implementation("com.github.carlcy:sy-rtc-android-sdk:v3.2.0")
+    implementation("com.github.carlcy:sy-rtc-android-sdk:v3.2.2")
 }
 ```
 
-把 `v3.2.0` 换成 [Releases](https://github.com/carlcy/sy-rtc-android-sdk/releases) 里的 tag。坐标里的 `carlcy` 是本仓库的 GitHub 用户，客户不要改成自己的用户名。
+把 `v3.2.2` 换成 [Releases](https://github.com/carlcy/sy-rtc-android-sdk/releases) 里的 tag。坐标里的 `carlcy` 是本仓库的 GitHub 用户，客户不要改成自己的用户名。
 
 ### 3. 权限
 
@@ -172,15 +172,15 @@ cd example && ./gradlew assemble
 客户侧推荐 **JitPack**（仓库已公开，不需要 Maven 账号）。Owner 发一版：
 
 ```bash
-# VERSION 与下面的 tag 数字一致，例如文件内容 3.2.0
-git tag v3.2.0
-git push origin v3.2.0
+# VERSION 与下面的 tag 数字一致，例如文件内容 3.2.2
+git tag v3.2.2
+git push origin v3.2.2
 ```
 
-打开 https://jitpack.io/#carlcy/sy-rtc-android-sdk 确认 `v3.2.0` 构建成功。客户依赖就是：
+打开 https://jitpack.io/#carlcy/sy-rtc-android-sdk 确认 `v3.2.2` 构建成功。客户依赖就是：
 
 ```gradle
-implementation 'com.github.carlcy:sy-rtc-android-sdk:v3.2.0'
+implementation 'com.github.carlcy:sy-rtc-android-sdk:v3.2.2'
 ```
 
 Maven Central 是可选的正式仓库，需要 Owner 自己准备签名和 Central Portal 令牌。步骤见 [PUBLISH_GUIDE.md](./PUBLISH_GUIDE.md)。
@@ -195,7 +195,7 @@ Maven Central 是可选的正式仓库，需要 Owner 自己准备签名和 Cent
 | `setApiBaseUrl` / `setSignalingServerUrl` / `setApiAuthToken` | 控制面与信令地址；JWT 与 RTC Token 不是同一个 |
 | `join` / `leave` / `renewToken` | 进出频道；续期重连信令 |
 | `setClientRole` / `setChannelProfile` | `HOST` / `AUDIENCE` / `PUBLISHER` / `SUBSCRIBER`；场景需在 `join` 前设置 |
-| `RtcEngine.VERSION` | 常量 `3.2.0`，与 `VERSION`、Demo `versionName` 一致 |
+| `RtcEngine.VERSION` | 常量 `3.2.2`，与 `VERSION`、Demo `versionName` 一致 |
 | `enableLocalAudio` / `muteLocalAudio` / `isLocalAudioMuted` | 本地音频。静音会通过信令 `user-media` 通知对端 `onUserMuteAudio`（与 iOS 互通） |
 | `muteLocalVideo` | 对端收到 `onUserMuteVideo(uid, muted)`（与 iOS 互通） |
 | `isRemoteAudioMuted` / `isRemoteVideoMuted` | 本机屏蔽了该路，或对端自己静音了，都返回 true |
@@ -298,7 +298,7 @@ Android 10（API 29）起，MediaProjection 必须运行在类型为 `mediaProje
 
 ## 常见问题
 
-**依赖解析失败。** 确认仓库里有 `https://jitpack.io`，版本号是 tag（带 `v`），例如 `v3.2.0`。该 tag 必须已经 push，并且 JitPack 页面是绿色。
+**依赖解析失败。** 确认仓库里有 `https://jitpack.io`，版本号是 tag（带 `v`），例如 `v3.2.2`。该 tag 必须已经 push，并且 JitPack 页面是绿色。
 
 **进不了频道。** Token 过期、信令地址没有 `wss`、或麦克风权限没给。重新向业务后端要 Token，再 `join` 或 `renewToken`。
 

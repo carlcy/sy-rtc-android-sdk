@@ -5,10 +5,10 @@
 客户最终写的是：
 
 ```gradle
-implementation 'com.github.carlcy:sy-rtc-android-sdk:v3.2.0'
+implementation 'com.github.carlcy:sy-rtc-android-sdk:v3.2.2'
 ```
 
-版本号来自 git tag，tag 必须是 `v` + `VERSION` 文件里的数字（`VERSION` 为 `3.2.0` 时 tag 为 `v3.2.0`）。
+版本号来自 git tag，tag 必须是 `v` + `VERSION` 文件里的数字（`VERSION` 为 `3.2.2` 时 tag 为 `v3.2.2`）。
 
 ## 1. JitPack（推荐，Owner 只需要打 tag）
 
@@ -17,17 +17,17 @@ implementation 'com.github.carlcy:sy-rtc-android-sdk:v3.2.0'
 发版：
 
 ```bash
-# 1. 改 VERSION（例如 3.2.0），提交并推到 main
+# 1. 改 VERSION（例如 3.2.2），提交并推到 main
 git add VERSION
-git commit -m "release: v3.2.0"
+git commit -m "release: v3.2.2"
 git push origin main
 
 # 2. 打 tag。JitPack 用 tag 当版本号，不要省略 v
-git tag v3.2.0
-git push origin v3.2.0
+git tag v3.2.2
+git push origin v3.2.2
 ```
 
-然后打开 https://jitpack.io/#carlcy/sy-rtc-android-sdk ，等 `v3.2.0` 构建变绿。
+然后打开 https://jitpack.io/#carlcy/sy-rtc-android-sdk ，等 `v3.2.2` 构建变绿。
 
 不需要 Sonatype 账号，不需要 GPG，不需要 GitHub Actions secret。未配置签名时 `publishToMavenLocal` 和 JitPack 构建都不会因为 signing 失败。
 
@@ -51,7 +51,7 @@ cd example && ./gradlew :app:assembleDebug
 | 变量 | 含义 |
 |------|------|
 | `POM_GROUP_ID` | `io.github.carlcy` |
-| `POM_VERSION` | `3.2.0`（无 `v` 前缀） |
+| `POM_VERSION` | `3.2.2`（无 `v` 前缀） |
 | `POM_ARTIFACT_ID` | `sy-rtc-android-sdk`（可省略） |
 | `OSSRH_USERNAME` 或 `CENTRAL_USERNAME` | Central Portal User Token 的用户名 |
 | `OSSRH_PASSWORD` 或 `CENTRAL_PASSWORD` | 对应口令 |
@@ -72,7 +72,7 @@ cd example && ./gradlew :app:assembleDebug
 
 ```bash
 export POM_GROUP_ID=io.github.carlcy
-export POM_VERSION=3.2.0
+export POM_VERSION=3.2.2
 export OSSRH_USERNAME=...
 export OSSRH_PASSWORD=...
 export SIGNING_KEY="$(cat secring.asc)"
@@ -83,7 +83,7 @@ export SIGNING_PASSWORD=...
 然后在 Central Portal 里把这次 deployment 发布出去。客户若改走 Central，依赖变为：
 
 ```gradle
-implementation 'io.github.carlcy:sy-rtc-android-sdk:3.2.0'
+implementation 'io.github.carlcy:sy-rtc-android-sdk:3.2.2'
 ```
 
 仓库只需要 `mavenCentral()`，不再需要 JitPack。在 Central 真正发布之前，README 和示例继续使用 JitPack 坐标。

@@ -11,7 +11,7 @@ import java.io.File
 class ClientSignalsTest {
     @Test
     fun versionMatchesFile() {
-        assertEquals("3.2.0", SdkInfo.VERSION)
+        assertEquals("3.2.2", SdkInfo.VERSION)
         val file = File("VERSION")
         assertTrue(file.isFile)
         assertEquals(SdkInfo.VERSION, file.readText().trim())

@@ -1,7 +1,13 @@
 # SY RTC Android SDK 更新日志
 
-## 未发布
+## 3.2.2
 
+- 版本对齐发布：Android、iOS（SyRtcSDK）、Flutter（sy_rtc_flutter_sdk）统一为 3.2.2。Android 代码与 v3.2.0 相同，仅 `RtcEngine.VERSION` / `VERSION` / Demo `versionName` 改为 3.2.2。
+- 跳过 3.2.1：iOS 3.2.1 是 iOS 独有的修复（DataChannel 代理被释放，收不到数据流 / SEI），Android 不受影响。
+
+## 3.2.0
+
+- 录音 `channels` 目前固定单声道，非 1 时打警告。
 - 网络质量上下行分开：`onNetworkQuality` 的 tx = RTT + 上行丢包（remote-inbound-rtp），rx = 本周期下行丢包 + 抖动；本端 uid 分别取各对端最差。新增 `LinkQuality`，`onRtcStats` 新增 `txQuality` / `rxQuality` / `txPacketLossRate` / `rxPacketLossRate` / `jitterMs`。与 iOS 相同。
 - Token 过期提醒去重：本地定时器与服务端推送（`token-privilege-will-expire` / `token-expired`，后端本轮新增）每个 Token 只回调一次；按 `data.expireAt` 忽略旧 Token 的迟到推送。新增 `TokenExpiryDedupe`。
 - 本地录音：移除名不副实的 `mp3`（实际输出 AMR-NB），改为报 `onError(1000)`；支持 `aac`（.m4a）与 `wav`。频道内改为录 WebRTC 管线里的 PCM 并混入远端声音（`includeLocal` / `includeRemote`），不再另开麦克风（此前通话中常录成静音）。见 README「本地录音」。
