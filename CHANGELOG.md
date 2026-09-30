@@ -2,6 +2,7 @@
 
 ## 未发布
 
+- 本地录音：移除名不副实的 `mp3`（实际输出 AMR-NB），改为报 `onError(1000)`；支持 `aac`（.m4a）与 `wav`。频道内改为录 WebRTC 管线里的 PCM 并混入远端声音（`includeLocal` / `includeRemote`），不再另开麦克风（此前通话中常录成静音）。见 README「本地录音」。
 - 实现 `onFirstRemoteVideoDecoded` / `onFirstRemoteVideoFrame` / `onVideoSizeChanged`（此前 Android 从不回调）：远端视频轨常驻 sink，首帧回调前两者，首帧及之后宽高或旋转变化回调 `onVideoSizeChanged`。新增 `onFirstLocalVideoFrame(width, height, elapsed)`，换轨（摄像头 / 屏幕 / 自定义采集）后各一次。规则见 `VideoFrameTracker`，与 iOS 相同。
 - `onNetworkQuality` 与 iOS 相同：每轮先本端 uid（所有对端最差一档），再逐个对端；不再用 uid `""`。新增 `NetworkQualityEstimator.worst`。
 - 新增 `RtcErrorCode`，三端取值统一（见 README「错误码」）。信令 `kicked` 帧带凭证码时 `onError` 报 4031 / 4032 / 4033，而不是 1004；信令 `error` 帧的 403 和凭证码原样透传。

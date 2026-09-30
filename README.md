@@ -236,6 +236,15 @@ Maven Central 是可选的正式仓库，需要 Owner 自己准备签名和 Cent
 
 远端视频轨到达后挂一个常驻 sink：第一帧回调 `onFirstRemoteVideoDecoded` 和 `onFirstRemoteVideoFrame`（elapsed 为距 join 的毫秒），第一帧及之后宽、高或旋转变化时回调 `onVideoSizeChanged(uid, width, height, rotation)`。宽高是解码后缓冲区尺寸，rotation 0/90/180/270。本地视频轨每次换轨（摄像头、屏幕共享、自定义采集）的第一帧回调 `onFirstLocalVideoFrame`。iOS 相同。
 
+### 本地录音
+
+`startAudioRecording(AudioRecordingConfiguration(filePath, codecType = "aac" | "wav"))`，与 iOS 相同：
+
+- 格式：`aac` / `aacLc` / `m4a` 输出 AAC-LC（MPEG-4，建议 `.m4a`）；`wav` / `pcm` 输出 16 bit WAV。**不支持 mp3**，传入回调 `onError(1000)` 并返回 -1（旧版 `mp3` 实际输出 AMR-NB，已移除）。
+- 频道内：录 WebRTC 管线里的 PCM，本端采集 + 所有远端混成单声道（`includeLocal` / `includeRemote` 控制），不另开麦克风，因此不会因与通话抢麦而录成静音。本端静音时录到静音；本端静音了某远端时不录他。
+- 频道外：系统录音器录麦克风，仅 AAC。频道外开始的录音 join 后可能被 WebRTC 抢占，请 join 后重新开始。
+- leave 时自动停止并写完文件；远端离开时从混音中移除。
+
 ### 错误码
 
 `onError(code, message)` 的取值三端（Android `RtcErrorCode`、iOS `SyRtcErrorCode`、Flutter `SyRtcErrorCode`）相同：

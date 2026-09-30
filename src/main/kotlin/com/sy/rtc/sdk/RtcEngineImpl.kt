@@ -387,6 +387,7 @@ internal class RtcEngineImpl(
         eventHandler?.onConnectionStateChanged("disconnecting", "leaving")
         
         try {
+            if (callRecorder != null) stopAudioRecording()
             stopMemberStatePoll()
             stopStatsPoll()
             cancelTokenPrivilegeWatch()
@@ -635,6 +636,7 @@ internal class RtcEngineImpl(
                     pendingLocalIceByUid.remove(uid)
                     pendingRemoteIceByUid.remove(uid)
                     detachRemoteFrameSink(uid)
+                    callRecorder?.removeSource(uid)
                     remoteVideoTracks.remove(uid)
                     remoteAudioTracks.remove(uid)
                     remotePcmVolume.remove(uid)
@@ -2296,78 +2298,96 @@ internal class RtcEngineImpl(
     
     // ==================== 音频录制 ====================
     
+    @Volatile private var callRecorder: CallAudioRecorder? = null
+
     fun startAudioRecording(config: AudioRecordingConfiguration): Int {
-        if (audioRecorder != null) {
+        if (audioRecorder != null || callRecorder != null) {
             Log.w(TAG, "音频录制已在进行中")
             return -1
         }
-        
+        val format = RecordingFormat.fromCodec(config.codecType)
+        if (format == null) {
+            eventHandler?.onError(RtcErrorCode.INVALID_ARGUMENT, "不支持的录音格式 ${config.codecType}，可选 aac（.m4a）或 wav")
+            return -1
+        }
+        if (config.filePath.isBlank() || config.sampleRate !in 8000..48000) {
+            eventHandler?.onError(RtcErrorCode.INVALID_ARGUMENT, "filePath 不能为空，sampleRate 需在 8000–48000")
+            return -1
+        }
         audioRecordingConfig = config
-        Log.d(TAG, "开始音频录制: ${config.filePath}, ${config.sampleRate}Hz, ${config.channels}ch, codec=${config.codecType}")
-        
-        try {
-            val recorder = android.media.MediaRecorder()
-            
-            // 设置音频源
-            recorder.setAudioSource(MediaRecorder.AudioSource.MIC)
-            
-            // 设置输出格式和编码器
-            when (config.codecType.lowercase()) {
-                "aaclc", "aac" -> {
-                    recorder.setOutputFormat(android.media.MediaRecorder.OutputFormat.MPEG_4)
-                    recorder.setAudioEncoder(android.media.MediaRecorder.AudioEncoder.AAC)
-                }
-                "mp3" -> {
-                    recorder.setOutputFormat(android.media.MediaRecorder.OutputFormat.MPEG_4)
-                    recorder.setAudioEncoder(android.media.MediaRecorder.AudioEncoder.AMR_NB)
-                }
-                else -> {
-                    recorder.setOutputFormat(android.media.MediaRecorder.OutputFormat.MPEG_4)
-                    recorder.setAudioEncoder(android.media.MediaRecorder.AudioEncoder.AAC)
-                }
+        val file = java.io.File(config.filePath)
+        if (isJoined.get() && localAudioTrack != null) {
+            // 频道内：用 WebRTC 已有 PCM，不另开麦克风（另开会与 WebRTC 抢采集，部分机型录到静音）。
+            return try {
+                val rec = CallAudioRecorder(file, format, config.sampleRate, config.aacBitrate)
+                rec.start()
+                callRecorder = rec
+                Log.d(TAG, "通话录音开始: ${file.absolutePath} $format ${config.sampleRate}Hz local=${config.includeLocal} remote=${config.includeRemote}")
+                0
+            } catch (e: Exception) {
+                Log.e(TAG, "启动通话录音失败", e)
+                callRecorder = null
+                -1
             }
-            
-            // 设置采样率和声道
+        }
+        if (format != RecordingFormat.AAC_M4A) {
+            eventHandler?.onError(RtcErrorCode.INVALID_ARGUMENT, "未加入频道时只支持 aac")
+            return -1
+        }
+        return try {
+            val recorder = android.media.MediaRecorder()
+            recorder.setAudioSource(MediaRecorder.AudioSource.MIC)
+            recorder.setOutputFormat(android.media.MediaRecorder.OutputFormat.MPEG_4)
+            recorder.setAudioEncoder(android.media.MediaRecorder.AudioEncoder.AAC)
             recorder.setAudioSamplingRate(config.sampleRate)
-            recorder.setAudioChannels(config.channels)
-            
-            // 设置输出文件
-            val file = java.io.File(config.filePath)
+            recorder.setAudioChannels(1)
+            recorder.setAudioEncodingBitRate(config.aacBitrate)
             file.parentFile?.mkdirs()
             recorder.setOutputFile(file.absolutePath)
-            
-            // 准备并开始录制
             recorder.prepare()
             recorder.start()
-            
             audioRecorder = recorder
-            Log.d(TAG, "音频录制已开始")
-            return 0
+            Log.d(TAG, "麦克风录音开始（未在频道内）: ${file.absolutePath}")
+            0
         } catch (e: Exception) {
             Log.e(TAG, "启动音频录制失败", e)
             audioRecorder = null
-            return -1
+            -1
         }
     }
-    
+
+    /** AudioTrackSink 回调里调用：通话录音进行中时把 PCM 送进混音器。 */
+    private fun feedCallRecorder(sourceId: String, bytes: ByteArray, sampleRate: Int, channels: Int) {
+        val rec = callRecorder ?: return
+        val cfg = audioRecordingConfig ?: return
+        val isLocal = sourceId == CallAudioRecorder.LOCAL_SOURCE
+        if ((isLocal && !cfg.includeLocal) || (!isLocal && !cfg.includeRemote)) return
+        if (!isLocal && (allRemoteAudioMuted || remoteAudioMuted[sourceId] == true)) return
+        rec.push(sourceId, bytes, sampleRate, channels)
+    }
+
     fun stopAudioRecording() {
+        val rec = callRecorder
+        if (rec != null) {
+            callRecorder = null
+            audioRecordingConfig = null
+            try { rec.stop() } catch (e: Exception) { Log.e(TAG, "停止通话录音失败", e) }
+            Log.d(TAG, "通话录音已停止")
+            return
+        }
         if (audioRecorder == null) {
             Log.w(TAG, "音频录制未在进行中")
             return
         }
-        
-        Log.d(TAG, "停止音频录制")
-        
         try {
             audioRecorder?.stop()
             audioRecorder?.release()
-            audioRecorder = null
-            audioRecordingConfig = null
             Log.d(TAG, "音频录制已停止")
         } catch (e: Exception) {
             Log.e(TAG, "停止音频录制失败", e)
-            audioRecorder = null
         }
+        audioRecorder = null
+        audioRecordingConfig = null
     }
     
     // ==================== 网络质量 ====================
@@ -2660,10 +2680,11 @@ internal class RtcEngineImpl(
 
     private fun attachLocalVolumeSink() {
         val track = localAudioTrack ?: return
-        val sink = AudioTrackSink { buffer, bits, _, channels, frames, _ ->
+        val sink = AudioTrackSink { buffer, bits, rate, channels, frames, _ ->
             val bytes = copyPcm16(buffer, bits, channels, frames) ?: return@AudioTrackSink
             localPcmVolume = VolumeMeter.pcm16LeRms(bytes)
             localPcmSeen = true
+            feedCallRecorder(CallAudioRecorder.LOCAL_SOURCE, bytes, rate, channels)
         }
         try {
             track.addSink(sink)
@@ -2673,10 +2694,11 @@ internal class RtcEngineImpl(
     }
 
     private fun attachRemoteVolumeSink(uid: String, track: org.webrtc.AudioTrack) {
-        val sink = AudioTrackSink { buffer, bits, _, channels, frames, _ ->
+        val sink = AudioTrackSink { buffer, bits, rate, channels, frames, _ ->
             val bytes = copyPcm16(buffer, bits, channels, frames) ?: return@AudioTrackSink
             remotePcmVolume[uid] = VolumeMeter.pcm16LeRms(bytes)
             remotePcmSeen.add(uid)
+            feedCallRecorder(uid, bytes, rate, channels)
         }
         try {
             track.addSink(sink)

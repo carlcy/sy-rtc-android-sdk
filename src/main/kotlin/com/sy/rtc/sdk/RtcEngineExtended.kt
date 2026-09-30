@@ -115,13 +115,31 @@ enum class VideoQualityTier(
 }
 
 /**
- * 音频录制配置
+ * 本地录音配置。与 iOS 相同：
+ *
+ * - [codecType]：`aac` / `aacLc` / `m4a` → AAC，MPEG-4 容器（文件建议用 `.m4a`）；`wav` / `pcm` → 16 bit WAV。
+ *   **不支持 mp3**（此前 Android 的 `mp3` 实际输出 AMR-NB），传入会回调 `onError(1000)` 并返回 -1。
+ * - 在频道内：录 WebRTC 已有的音频（本端采集 + 远端解码），不另开麦克风，混成单声道。
+ *   [includeLocal] / [includeRemote] 控制是否包含本端、远端。本端静音时录到的是静音。
+ * - 不在频道内：只录麦克风（系统录音器，仅 AAC）。录音途中 join 会与 WebRTC 抢麦克风，请 join 后再开始。
+ * - [channels] 目前只支持 1（混音输出为单声道）；[quality]：`low` 32 kbps、`medium` 64 kbps、`high` 128 kbps（仅 AAC）。
+ * - leave 时自动停止并写完文件。
  */
 data class AudioRecordingConfiguration(
     val filePath: String,
     val sampleRate: Int = 32000,
     val channels: Int = 1,
     val codecType: String = "aacLc",
-    val quality: String = "medium"
-)
+    val quality: String = "medium",
+    val includeLocal: Boolean = true,
+    val includeRemote: Boolean = true,
+) {
+    /** AAC 码率（bit/s）。 */
+    val aacBitrate: Int
+        get() = when (quality.lowercase()) {
+            "low" -> 32_000
+            "high" -> 128_000
+            else -> 64_000
+        }
+}
 
