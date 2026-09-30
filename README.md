@@ -218,6 +218,20 @@ Maven Central 是可选的正式仓库，需要 Owner 自己准备签名和 Cent
 
 **跨端约定**：静音用信令类型 `user-media`（`{uid, audioMuted?, videoMuted?}`），附加信息用频道消息 `sy-extra:<文本>`，SEI 用 DataChannel `SYSEI` 前缀。这些 SDK 保留消息不会回调 `onChannelMessage`。旧版 Android 的 `client-mute` / `stream-extra` JSON 仍能解析，但不再发送。
 
+### 断线重连
+
+与 iOS 相同的策略（`ReconnectPolicy`）：信令或 ICE 断开后最多重试 5 次，第 n 次等待 2^(n-1) 秒（1、2、4、8、16 秒）。ICE 断开时由 uid 字典序较小的一方 `restartIce` 并重发 offer，另一方等对端 offer。成功后次数清零。
+
+| 时机 | `onConnectionStateChanged(state, reason)` | 专用回调 |
+|---|---|---|
+| join | `connecting` / `joining` → `connected` / `join_success` | `onJoinChannelSuccess` |
+| 断开，开始重试 | `reconnecting` / `signaling` 或 `ice` | `onReconnecting(reason, attempt, maxAttempts, delayMs)` |
+| 恢复 | `connected` / `rejoin_success` | `onRejoinChannelSuccess`、`onReconnected(reason)` |
+| 5 次都失败 | `failed` / `signaling` 或 `ice` | `onReconnectFailed(reason)`、`onError(1003)` |
+| leave | `disconnecting` / `leaving` → `disconnected` / `leave` | `onLeaveChannel` |
+
+3.2.0 之前 Android 只重试 3 次、间隔 1/2/3 秒，reason 为 `join` / `user-list` / `rejoined`；`restartIce` 没有重发 offer，实际不生效。
+
 ### 网络质量档位
 
 RTT 和丢包各自落档，取较差的一档；没有样本时为 `unknown`。阈值参考即构 Express 的分级，Android 与 iOS 完全相同（两端各有同一张表的单测）。 3.2.0 起名字与 iOS 统一：原 `medium` 改为 `poor`，`die` 改为 `down`（`NetworkQualityEstimator.MEDIUM` / `DIE` 仍保留为已弃用别名）。`onRtcStats` 同时给 `lossPercent`（0–100）和 `packetLossRate`（0–1）。

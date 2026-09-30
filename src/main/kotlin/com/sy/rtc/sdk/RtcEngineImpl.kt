@@ -142,6 +142,8 @@ internal class RtcEngineImpl(
     private val iceRecoveryPending = AtomicBoolean(false)
     private val signalingRetryPosted = AtomicBoolean(false)
     private var signalingRetry: Runnable? = null
+    private var iceRetry: Runnable? = null
+    private val iceLostPeers: MutableSet<String> = ConcurrentHashMap.newKeySet()
     private val mainHandler by lazy { android.os.Handler(android.os.Looper.getMainLooper()) }
     private var localAudioMuted = false
     private var localVideoMuted = false
@@ -335,11 +337,12 @@ internal class RtcEngineImpl(
         currentToken = token
         reconnectTracker.reset()
         iceRecoveryPending.set(false)
+        iceLostPeers.clear()
         signalingRetryPosted.set(false)
         // 加入频道即视为“已加入”（即便房间内暂时没有其他人）
         joinStartTime = System.currentTimeMillis()
         isJoined.set(true)
-        eventHandler?.onConnectionStateChanged("connecting", "join")
+        eventHandler?.onConnectionStateChanged("connecting", "joining")
         // 清理多人会话状态
         offerSentByUid.clear()
         remoteSdpSetByUid.clear()
@@ -376,6 +379,7 @@ internal class RtcEngineImpl(
         }
         
         Log.d(TAG, "离开频道: channelId=$currentChannelId")
+        eventHandler?.onConnectionStateChanged("disconnecting", "leaving")
         
         try {
             stopMemberStatePoll()
@@ -427,6 +431,8 @@ internal class RtcEngineImpl(
             )
             eventHandler?.onLeaveChannel(stats)
             eventHandler?.onConnectionStateChanged("disconnected", "leave")
+            iceRetry?.let { mainHandler.removeCallbacks(it) }
+            iceRetry = null
             currentChannelId = null
             currentUid = null
             currentToken = null
@@ -475,12 +481,15 @@ internal class RtcEngineImpl(
                 when (reconnectTracker.onConnected()) {
                     RejoinSignal.REJOINED -> {
                         eventHandler?.onRejoinChannelSuccess(channelId, currentUid ?: "", elapsed)
-                        eventHandler?.onConnectionStateChanged("connected", "rejoined")
+                        eventHandler?.onConnectionStateChanged("connected", "rejoin_success")
+                        eventHandler?.onReconnected("signaling")
                     }
-                    else -> {
+                    RejoinSignal.JOINED -> {
                         eventHandler?.onJoinChannelSuccess(channelId, currentUid ?: "", elapsed)
-                        eventHandler?.onConnectionStateChanged("connected", "user-list")
+                        eventHandler?.onConnectionStateChanged("connected", "join_success")
                     }
+                    // renewToken 等主动重连信令：不重复回调 onJoinChannelSuccess。
+                    RejoinSignal.NONE -> {}
                 }
                 val usersAny = data["users"]
                 val users: List<String> = when (usersAny) {
@@ -607,6 +616,12 @@ internal class RtcEngineImpl(
                 val uid = data["uid"] as? String
                 if (uid != null) {
                     eventHandler?.onUserOffline(uid, "quit")
+                    if (iceLostPeers.remove(uid) && iceLostPeers.isEmpty() && iceRecoveryPending.getAndSet(false)) {
+                        // 断开的对端已离开，不再为它重连。
+                        iceRetry?.let { mainHandler.removeCallbacks(it) }
+                        iceRetry = null
+                        reconnectTracker.onConnected()
+                    }
                     peerConnections.remove(uid)?.close()
                     offerSentByUid.remove(uid)
                     remoteSdpSetByUid.remove(uid)
@@ -676,9 +691,9 @@ internal class RtcEngineImpl(
                 Log.d(TAG, "IceConnectionState(remote=$remoteUid): $state")
                 when (state) {
                     PeerConnection.IceConnectionState.DISCONNECTED,
-                    PeerConnection.IceConnectionState.FAILED -> handleIceLost(remoteUid)
+                    PeerConnection.IceConnectionState.FAILED -> mainHandler.post { handleIceLost(remoteUid) }
                     PeerConnection.IceConnectionState.CONNECTED,
-                    PeerConnection.IceConnectionState.COMPLETED -> handleIceRecovered(remoteUid)
+                    PeerConnection.IceConnectionState.COMPLETED -> mainHandler.post { handleIceRecovered(remoteUid) }
                     else -> {}
                 }
             }
@@ -2431,10 +2446,12 @@ internal class RtcEngineImpl(
         eventHandler?.onConnectionStateChanged(decision.state, "signaling")
         if (!decision.shouldRetry) {
             signalingRetryPosted.set(false)
-            eventHandler?.onError(1003, "信令连接失败")
+            eventHandler?.onReconnectFailed("signaling")
+            eventHandler?.onError(1003, "信令重连失败")
             return
         }
-        val delayMs = 1000L * reconnectTracker.attemptCount().coerceAtLeast(1)
+        val delayMs = decision.delayMs
+        eventHandler?.onReconnecting("signaling", decision.attempt, ReconnectPolicy.MAX_ATTEMPTS, delayMs)
         val task = Runnable {
             signalingRetryPosted.set(false)
             if (isJoined.get()) signalingClient?.connect()
@@ -2443,38 +2460,67 @@ internal class RtcEngineImpl(
         mainHandler.postDelayed(task, delayMs)
     }
 
+    /**
+     * 某个对端 ICE 断开：计一次重连（与信令共用次数），按 [ReconnectPolicy] 等待后若仍未恢复再计下一次。
+     * 字典序较小的一方 restartIce 并重发 offer（与首次 offer 的发起方相同，避免 glare）。
+     */
     private fun handleIceLost(remoteUid: String) {
         if (!isJoined.get()) return
+        if (peerConnections[remoteUid] == null) return
+        iceLostPeers.add(remoteUid)
         if (!iceRecoveryPending.compareAndSet(false, true)) {
-            try {
-                peerConnections[remoteUid]?.restartIce()
-            } catch (e: Exception) {
-                Log.w(TAG, "restartIce 失败", e)
-            }
+            // 已在恢复中：这个对端也重启 ICE，但不额外计次。
+            restartIceFor(remoteUid)
             return
         }
         val decision = reconnectTracker.onTransportLost()
         eventHandler?.onConnectionStateChanged(decision.state, "ice")
-        if (!decision.shouldRetry) return
-        peerConnections.values.forEach { pc ->
-            try {
-                pc.restartIce()
-            } catch (e: Exception) {
-                Log.w(TAG, "restartIce 失败", e)
-            }
+        if (!decision.shouldRetry) {
+            iceRecoveryPending.set(false)
+            iceLostPeers.clear()
+            eventHandler?.onReconnectFailed("ice")
+            eventHandler?.onError(1003, "媒体连接重连失败")
+            return
+        }
+        eventHandler?.onReconnecting("ice", decision.attempt, ReconnectPolicy.MAX_ATTEMPTS, decision.delayMs)
+        iceLostPeers.toList().forEach(::restartIceFor)
+        iceRetry?.let { mainHandler.removeCallbacks(it) }
+        val task = Runnable {
+            iceRetry = null
+            if (!isJoined.get() || !iceRecoveryPending.get()) return@Runnable
+            iceLostPeers.retainAll(peerConnections.keys)
+            iceRecoveryPending.set(false)
+            val next = iceLostPeers.firstOrNull() ?: return@Runnable
+            handleIceLost(next)
+        }
+        iceRetry = task
+        mainHandler.postDelayed(task, decision.delayMs)
+    }
+
+    private fun restartIceFor(remoteUid: String) {
+        val pc = peerConnections[remoteUid] ?: return
+        try {
+            pc.restartIce()
+        } catch (e: Exception) {
+            Log.w(TAG, "restartIce 失败", e)
+        }
+        if (shouldInitiateOffer(currentUid, remoteUid)) {
+            mainHandler.post { if (isJoined.get()) renegotiate(remoteUid) }
         }
     }
 
-    private fun handleIceRecovered(@Suppress("UNUSED_PARAMETER") remoteUid: String) {
-        iceRecoveryPending.set(false)
+    private fun handleIceRecovered(remoteUid: String) {
+        iceLostPeers.remove(remoteUid)
+        if (iceLostPeers.isNotEmpty()) return
+        val wasRecovering = iceRecoveryPending.getAndSet(false)
+        iceRetry?.let { mainHandler.removeCallbacks(it) }
+        iceRetry = null
+        if (!reconnectTracker.hasJoined()) return
         val elapsed = (System.currentTimeMillis() - joinStartTime).toInt().coerceAtLeast(0)
-        when (reconnectTracker.onConnected()) {
-            RejoinSignal.REJOINED -> {
-                eventHandler?.onRejoinChannelSuccess(currentChannelId ?: "", currentUid ?: "", elapsed)
-                eventHandler?.onConnectionStateChanged("connected", "rejoined")
-            }
-            RejoinSignal.JOINED -> eventHandler?.onConnectionStateChanged("connected", "ice")
-            RejoinSignal.NONE -> {}
+        if (reconnectTracker.onConnected() == RejoinSignal.REJOINED) {
+            eventHandler?.onRejoinChannelSuccess(currentChannelId ?: "", currentUid ?: "", elapsed)
+            eventHandler?.onConnectionStateChanged("connected", "rejoin_success")
+            eventHandler?.onReconnected(if (wasRecovering) "ice" else "signaling")
         }
     }
 

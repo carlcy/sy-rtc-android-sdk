@@ -21,6 +21,8 @@
 
 ### 行为
 
+- 重连策略与 iOS 统一：最多 5 次，间隔 1/2/4/8/16 秒；ICE 断开时 offer 发起方 `restartIce` 并重发 offer（此前 restartIce 不重协商，实际无效）。新增 `onReconnecting` / `onReconnected` / `onReconnectFailed`；连接状态 reason 改为 `joining` / `join_success` / `rejoin_success` / `leaving`，与 iOS 相同。renewToken 重连信令后不再重复回调 `onJoinChannelSuccess`
+
 - 网络质量阈值与 iOS 统一（参考即构）：excellent <100ms/<1%，good <200ms/<3%，poor <400ms/<8%，bad <800ms/<20%，其余 down。档位名 `medium`→`poor`、`die`→`down`，与 iOS / Flutter 相同
 
 - 跨端互通：静音通知改用 iOS 同款信令 `user-media`，附加信息改用 `sy-extra:` 前缀频道消息；旧 JSON 仍可接收。SDK 保留消息不再触发 `onChannelMessage`

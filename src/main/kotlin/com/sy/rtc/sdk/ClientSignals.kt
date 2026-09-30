@@ -245,12 +245,38 @@ enum class RejoinSignal {
     REJOINED
 }
 
+/**
+ * 重连策略。Android 与 iOS（`SyRtcReconnectPolicy`）相同，改动需两端同步。
+ *
+ * 信令或 ICE 断开后最多重试 [MAX_ATTEMPTS] 次，第 n 次等待 `2^(n-1)` 秒：1、2、4、8、16 秒。
+ * ICE 断开时由字典序较小的一方 `restartIce` 并重新发 offer；另一方等对端 offer。
+ * 连接状态回调（两端同名）：
+ * - `connecting` / `joining` → `connected` / `join_success`
+ * - `reconnecting` / `signaling` 或 `ice`（并回调 `onReconnecting`）
+ * - `connected` / `rejoin_success`（并回调 `onRejoinChannelSuccess`、`onReconnected`）
+ * - `failed` / `signaling` 或 `ice`（并回调 `onReconnectFailed`、`onError(1003)`）
+ * - `disconnecting` / `leaving` → `disconnected` / `leave`
+ */
+object ReconnectPolicy {
+    const val MAX_ATTEMPTS = 5
+    const val BASE_DELAY_MS = 1000L
+    const val MAX_DELAY_MS = 16_000L
+
+    /** [attempt] 从 1 开始。 */
+    fun delayMs(attempt: Int): Long {
+        val n = attempt.coerceIn(1, 31) - 1
+        return (BASE_DELAY_MS shl n.coerceAtMost(20)).coerceAtMost(MAX_DELAY_MS)
+    }
+}
+
 data class TransportLoss(
     val shouldRetry: Boolean,
-    val state: String
+    val state: String,
+    val attempt: Int = 0,
+    val delayMs: Long = 0,
 )
 
-class ReconnectTracker(private val maxAttempts: Int = 3) {
+class ReconnectTracker(private val maxAttempts: Int = ReconnectPolicy.MAX_ATTEMPTS) {
     private var joinedOnce = false
     private var pendingRejoin = false
     private var attempts = 0
@@ -264,6 +290,12 @@ class ReconnectTracker(private val maxAttempts: Int = 3) {
 
     @Synchronized
     fun attemptCount(): Int = attempts
+
+    @Synchronized
+    fun hasJoined(): Boolean = joinedOnce
+
+    @Synchronized
+    fun isRecovering(): Boolean = pendingRejoin
 
     /**
      * 第一次连通记为 JOINED。只有发生过掉线并准备重连时，下一次连通才是 REJOINED。
@@ -290,10 +322,10 @@ class ReconnectTracker(private val maxAttempts: Int = 3) {
         attempts += 1
         return if (attempts <= maxAttempts) {
             pendingRejoin = true
-            TransportLoss(shouldRetry = true, state = "reconnecting")
+            TransportLoss(shouldRetry = true, state = "reconnecting", attempt = attempts, delayMs = ReconnectPolicy.delayMs(attempts))
         } else {
             pendingRejoin = false
-            TransportLoss(shouldRetry = false, state = "failed")
+            TransportLoss(shouldRetry = false, state = "failed", attempt = attempts)
         }
     }
 }

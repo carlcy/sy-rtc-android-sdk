@@ -69,6 +69,18 @@ open class RtcEventHandler {
     open fun onConnectionStateChanged(state: String, reason: String) {}
 
     /**
+     * 开始第 [attempt] 次重连（共 [maxAttempts] 次），[delayMs] 后执行。[reason] 为 `signaling` 或 `ice`。
+     * 策略见 [ReconnectPolicy]，与 iOS 相同。
+     */
+    open fun onReconnecting(reason: String, attempt: Int, maxAttempts: Int, delayMs: Long) {}
+
+    /** 重连成功。[reason] 为 `signaling` 或 `ice`，同时也会回调 [onRejoinChannelSuccess]。 */
+    open fun onReconnected(reason: String) {}
+
+    /** 重连次数用完。之后还会回调 `onError(1003)`；需要业务层 leave 后重新 join。 */
+    open fun onReconnectFailed(reason: String) {}
+
+    /**
      * 网络质量回调
      *
      * @param uid 用户ID
