@@ -266,7 +266,7 @@ Maven Central 是可选的正式仓库，需要 Owner 自己准备签名和 Cent
 
 ### Token 过期提醒
 
-Token 是服务端签发的 `base64url(payload).签名`，payload 里的 `expireAt` 是过期时间（Unix 秒）。`join` 和 `renewToken` 后，SDK 在过期前 30 秒回调 `onTokenPrivilegeWillExpire`，到期回调 `onRequestToken`；收到后向业务后端再要一张 Token，调用 `renewToken`。iOS 行为相同。服务端若下发 `token-will-expire` / `token-expired` 信令，也会走同样的回调。
+Token 是服务端签发的 `base64url(payload).签名`，payload 里的 `expireAt` 是过期时间（Unix 秒）。`join` 和 `renewToken` 后，SDK 在过期前 30 秒回调 `onTokenPrivilegeWillExpire`，到期回调 `onRequestToken`；收到后向业务后端再要一张 Token，调用 `renewToken`。iOS 行为相同。服务端也会在过期前 30 秒推送 `token-privilege-will-expire`、到期推送 `token-expired`（带 `data.expireAt`）。本地定时器和服务端推送按 Token 去重（`TokenExpiryDedupe`）：每个 Token 只回调一次提醒、一次过期；过期后不补提醒；旧 Token 迟到的推送忽略；`renewToken` 后重新计。
 
 ### 网络质量档位
 

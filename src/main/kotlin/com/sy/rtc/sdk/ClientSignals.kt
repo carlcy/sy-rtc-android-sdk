@@ -766,3 +766,46 @@ class VideoFrameTracker {
         return Change(first = false, sizeChanged = changed)
     }
 }
+
+/**
+ * Token 过期提醒去重：本地定时器与服务端推送（`token-privilege-will-expire` / `token-expired`，
+ * `data.expireAt`）各自可能触发，同一个 Token 只回调一次提醒、一次过期。与 iOS `SyRtcTokenExpiryDedupe` 相同。
+ *
+ * - 过期之后不再补发提醒；
+ * - 推送带的 `expireAt` 早于当前 Token（旧连接迟到的推送）时忽略；
+ * - join / renewToken 换 Token 时 [reset]。
+ */
+class TokenExpiryDedupe {
+    enum class Kind { WILL_EXPIRE, EXPIRED }
+
+    private var expireAt: Long? = null
+    private var warned = false
+    private var expired = false
+
+    @Synchronized
+    fun reset(currentExpireAt: Long?) {
+        expireAt = currentExpireAt
+        warned = false
+        expired = false
+    }
+
+    /** 返回 true 表示应回调。[eventExpireAt] 为推送里的 `expireAt`，本地定时器传 null。 */
+    @Synchronized
+    fun shouldFire(kind: Kind, eventExpireAt: Long? = null): Boolean {
+        val current = expireAt
+        if (eventExpireAt != null && current != null && eventExpireAt < current) return false
+        return when (kind) {
+            Kind.WILL_EXPIRE -> if (warned || expired) false else { warned = true; true }
+            Kind.EXPIRED -> if (expired) false else { expired = true; warned = true; true }
+        }
+    }
+
+    companion object {
+        /** 推送 data 里的 `expireAt`（数字或字符串）。 */
+        fun expireAtOf(data: Map<String, Any?>): Long? = when (val v = data["expireAt"]) {
+            is Number -> v.toLong().takeIf { it > 0 }
+            is String -> v.toLongOrNull()?.takeIf { it > 0 }
+            else -> null
+        }
+    }
+}

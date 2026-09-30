@@ -671,8 +671,14 @@ internal class RtcEngineImpl(
                     videoMuted?.let { applyRemoteSelfMute(fromUid, "video", it) }
                 }
             }
-            "token-will-expire", "token-privilege-will-expire" -> eventHandler?.onTokenPrivilegeWillExpire()
-            "token-expired", "request-token" -> eventHandler?.onRequestToken()
+            "token-will-expire", "token-privilege-will-expire" ->
+                if (tokenExpiryDedupe.shouldFire(TokenExpiryDedupe.Kind.WILL_EXPIRE, TokenExpiryDedupe.expireAtOf(data))) {
+                    eventHandler?.onTokenPrivilegeWillExpire()
+                }
+            "token-expired", "request-token" ->
+                if (tokenExpiryDedupe.shouldFire(TokenExpiryDedupe.Kind.EXPIRED, TokenExpiryDedupe.expireAtOf(data))) {
+                    eventHandler?.onRequestToken()
+                }
             "error" -> {
                 eventHandler?.onError(
                     RtcErrorCode.forSignalingError(data),
@@ -1196,16 +1202,28 @@ internal class RtcEngineImpl(
      * Token 里带过期时间（服务端 `expireAt` 或 JWT `exp`）时，过期前 30 秒回调
      * `onTokenPrivilegeWillExpire`，到期回调 `onRequestToken`。与 iOS 相同。
      */
+    private val tokenExpiryDedupe = TokenExpiryDedupe()
+
+    private fun fireLocalTokenEvent(kind: TokenExpiryDedupe.Kind) {
+        if (!isJoined.get() || !tokenExpiryDedupe.shouldFire(kind)) return
+        when (kind) {
+            TokenExpiryDedupe.Kind.WILL_EXPIRE -> eventHandler?.onTokenPrivilegeWillExpire()
+            TokenExpiryDedupe.Kind.EXPIRED -> eventHandler?.onRequestToken()
+        }
+    }
+
     private fun scheduleTokenPrivilegeWatch(token: String) {
         cancelTokenPrivilegeWatch()
-        val exp = TokenExpiry.expireAtSeconds(token) ?: return
+        val exp = TokenExpiry.expireAtSeconds(token)
+        tokenExpiryDedupe.reset(exp)
+        if (exp == null) return
         val (warnDelay, expireDelay) = TokenExpiry.delaysMs(exp, System.currentTimeMillis())
         if (expireDelay <= 0) {
-            mainHandler.post { if (isJoined.get()) eventHandler?.onRequestToken() }
+            mainHandler.post { fireLocalTokenEvent(TokenExpiryDedupe.Kind.EXPIRED) }
             return
         }
-        val warn = Runnable { if (isJoined.get()) eventHandler?.onTokenPrivilegeWillExpire() }
-        val expired = Runnable { if (isJoined.get()) eventHandler?.onRequestToken() }
+        val warn = Runnable { fireLocalTokenEvent(TokenExpiryDedupe.Kind.WILL_EXPIRE) }
+        val expired = Runnable { fireLocalTokenEvent(TokenExpiryDedupe.Kind.EXPIRED) }
         tokenWarnTask = warn
         tokenExpireTask = expired
         mainHandler.postDelayed(warn, warnDelay)
