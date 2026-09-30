@@ -232,6 +232,10 @@ Maven Central 是可选的正式仓库，需要 Owner 自己准备签名和 Cent
 
 3.2.0 之前 Android 只重试 3 次、间隔 1/2/3 秒，reason 为 `join` / `user-list` / `rejoined`；`restartIce` 没有重发 offer，实际不生效。
 
+### 首帧与分辨率
+
+远端视频轨到达后挂一个常驻 sink：第一帧回调 `onFirstRemoteVideoDecoded` 和 `onFirstRemoteVideoFrame`（elapsed 为距 join 的毫秒），第一帧及之后宽、高或旋转变化时回调 `onVideoSizeChanged(uid, width, height, rotation)`。宽高是解码后缓冲区尺寸，rotation 0/90/180/270。本地视频轨每次换轨（摄像头、屏幕共享、自定义采集）的第一帧回调 `onFirstLocalVideoFrame`。iOS 相同。
+
 ### 错误码
 
 `onError(code, message)` 的取值三端（Android `RtcErrorCode`、iOS `SyRtcErrorCode`、Flutter `SyRtcErrorCode`）相同：

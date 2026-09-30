@@ -2,6 +2,7 @@
 
 ## 未发布
 
+- 实现 `onFirstRemoteVideoDecoded` / `onFirstRemoteVideoFrame` / `onVideoSizeChanged`（此前 Android 从不回调）：远端视频轨常驻 sink，首帧回调前两者，首帧及之后宽高或旋转变化回调 `onVideoSizeChanged`。新增 `onFirstLocalVideoFrame(width, height, elapsed)`，换轨（摄像头 / 屏幕 / 自定义采集）后各一次。规则见 `VideoFrameTracker`，与 iOS 相同。
 - `onNetworkQuality` 与 iOS 相同：每轮先本端 uid（所有对端最差一档），再逐个对端；不再用 uid `""`。新增 `NetworkQualityEstimator.worst`。
 - 新增 `RtcErrorCode`，三端取值统一（见 README「错误码」）。信令 `kicked` 帧带凭证码时 `onError` 报 4031 / 4032 / 4033，而不是 1004；信令 `error` 帧的 403 和凭证码原样透传。
 - 修复：信令错误的文本取自 `data.message`（服务端实际字段），此前一直显示「信令错误」。

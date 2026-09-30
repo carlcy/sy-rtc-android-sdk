@@ -146,6 +146,8 @@ internal class RtcEngineImpl(
     private val iceLostPeers: MutableSet<String> = ConcurrentHashMap.newKeySet()
     private val mainHandler by lazy { android.os.Handler(android.os.Looper.getMainLooper()) }
     private var tokenWarnTask: Runnable? = null
+    private val remoteFrameSinks = ConcurrentHashMap<String, Pair<org.webrtc.VideoTrack, org.webrtc.VideoSink>>()
+    private var localFrameSink: org.webrtc.VideoSink? = null
     private var tokenExpireTask: Runnable? = null
     private var localAudioMuted = false
     private var localVideoMuted = false
@@ -415,6 +417,7 @@ internal class RtcEngineImpl(
                 remoteRenderers.values.forEach { it.release() }
                 remoteRenderers.clear()
             }
+            remoteFrameSinks.keys.toList().forEach { detachRemoteFrameSink(it) }
             remoteVideoTracks.clear()
             remoteAudioTracks.clear()
             remotePcmVolume.clear()
@@ -631,6 +634,7 @@ internal class RtcEngineImpl(
                     remoteSdpSetByUid.remove(uid)
                     pendingLocalIceByUid.remove(uid)
                     pendingRemoteIceByUid.remove(uid)
+                    detachRemoteFrameSink(uid)
                     remoteVideoTracks.remove(uid)
                     remoteAudioTracks.remove(uid)
                     remotePcmVolume.remove(uid)
@@ -736,6 +740,7 @@ internal class RtcEngineImpl(
                         val videoTrack = track as org.webrtc.VideoTrack
                         remoteVideoTracks[remoteUid] = videoTrack
                         applyRemoteVideo(remoteUid)
+                        attachRemoteFrameSink(remoteUid, videoTrack)
                         val container = pendingRemoteContainers[remoteUid]?.get()
                         val viewId = videoViews[remoteUid]
                         android.os.Handler(android.os.Looper.getMainLooper()).post {
@@ -2444,6 +2449,7 @@ internal class RtcEngineImpl(
         dataChannels.clear()
         
         // 释放远端视频轨道与渲染器
+        remoteFrameSinks.keys.toList().forEach { detachRemoteFrameSink(it) }
         remoteVideoTracks.values.forEach { it.dispose() }
         remoteVideoTracks.clear()
         android.os.Handler(android.os.Looper.getMainLooper()).post {
@@ -2689,10 +2695,67 @@ internal class RtcEngineImpl(
         return out
     }
 
+    /**
+     * 远端视频轨挂一个常驻 sink：首帧回调 onFirstRemoteVideoDecoded / onFirstRemoteVideoFrame，
+     * 首帧及之后宽高或旋转变化时回调 onVideoSizeChanged。与 iOS 相同。
+     */
+    private fun attachRemoteFrameSink(uid: String, track: org.webrtc.VideoTrack) {
+        detachRemoteFrameSink(uid)
+        val tracker = VideoFrameTracker()
+        val sink = org.webrtc.VideoSink { frame ->
+            val w = frame.buffer.width
+            val h = frame.buffer.height
+            val rot = frame.rotation
+            val change = tracker.onFrame(w, h, rot)
+            if (!change.first && !change.sizeChanged) return@VideoSink
+            val elapsed = (System.currentTimeMillis() - joinStartTime).toInt().coerceAtLeast(0)
+            mainHandler.post {
+                if (!isJoined.get()) return@post
+                if (change.first) {
+                    eventHandler?.onFirstRemoteVideoDecoded(uid, w, h, elapsed)
+                    eventHandler?.onFirstRemoteVideoFrame(uid, w, h, elapsed)
+                }
+                if (change.sizeChanged) eventHandler?.onVideoSizeChanged(uid, w, h, rot)
+            }
+        }
+        try {
+            track.addSink(sink)
+            remoteFrameSinks[uid] = track to sink
+        } catch (e: Exception) {
+            Log.w(TAG, "远端首帧 sink 挂载失败: uid=$uid", e)
+        }
+    }
+
+    private fun detachRemoteFrameSink(uid: String) {
+        val (track, sink) = remoteFrameSinks.remove(uid) ?: return
+        try { track.removeSink(sink) } catch (_: Exception) {}
+    }
+
+    /** 本地视频轨（摄像头 / 屏幕 / 自定义采集）换轨后，新轨的第一帧回调 onFirstLocalVideoFrame。 */
+    private fun attachLocalFrameSink(previous: org.webrtc.VideoTrack?, track: org.webrtc.VideoTrack) {
+        localFrameSink?.let { old -> try { previous?.removeSink(old) } catch (_: Exception) {} }
+        val tracker = VideoFrameTracker()
+        val sink = org.webrtc.VideoSink { frame ->
+            val change = tracker.onFrame(frame.buffer.width, frame.buffer.height, frame.rotation)
+            if (!change.first) return@VideoSink
+            val w = frame.buffer.width
+            val h = frame.buffer.height
+            val elapsed = if (joinStartTime > 0) (System.currentTimeMillis() - joinStartTime).toInt().coerceAtLeast(0) else 0
+            mainHandler.post { eventHandler?.onFirstLocalVideoFrame(w, h, elapsed) }
+        }
+        try {
+            track.addSink(sink)
+            localFrameSink = sink
+        } catch (e: Exception) {
+            Log.w(TAG, "本地首帧 sink 挂载失败", e)
+        }
+    }
+
     private fun replaceLocalVideoTrack(track: org.webrtc.VideoTrack?) {
         val previous = localVideoTrack
         localVideoTrack = track
         if (track == null) return
+        attachLocalFrameSink(previous, track)
         peerConnections.values.forEach { pc ->
             val sender = pc.senders.firstOrNull { sender ->
                 sender.track()?.kind() == "video" || (previous != null && sender.track() == previous)

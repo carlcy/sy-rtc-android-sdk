@@ -170,6 +170,12 @@ open class RtcEventHandler {
     open fun onVideoSizeChanged(uid: String, width: Int, height: Int, rotation: Int) {}
 
     /**
+     * 本地视频轨（摄像头、屏幕共享或自定义采集）的第一帧已采集。每次换轨后各回调一次。
+     * [elapsed] 为距 join 的毫秒数，join 前为 0。与 iOS 相同。
+     */
+    open fun onFirstLocalVideoFrame(width: Int, height: Int, elapsed: Int) {}
+
+    /**
      * 音频路由变化回调
      *
      * @param routing 路由类型

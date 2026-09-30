@@ -738,3 +738,31 @@ object TokenExpiry {
         return String(out.toByteArray(), Charsets.UTF_8)
     }
 }
+
+/**
+ * 视频首帧与分辨率变化判定。每条视频轨一个实例，与 iOS `SyRtcVideoFrameTracker` 规则相同：
+ * 第一帧 → `first` 且 `sizeChanged`；之后宽、高或旋转与上一帧不同 → `sizeChanged`。
+ * 宽高为解码后缓冲区尺寸，旋转为 0/90/180/270。
+ */
+class VideoFrameTracker {
+    data class Change(val first: Boolean, val sizeChanged: Boolean)
+
+    private var seen = false
+    private var width = 0
+    private var height = 0
+    private var rotation = 0
+
+    @Synchronized
+    fun onFrame(width: Int, height: Int, rotation: Int): Change {
+        if (!seen) {
+            seen = true
+            this.width = width; this.height = height; this.rotation = rotation
+            return Change(first = true, sizeChanged = true)
+        }
+        val changed = width != this.width || height != this.height || rotation != this.rotation
+        if (changed) {
+            this.width = width; this.height = height; this.rotation = rotation
+        }
+        return Change(first = false, sizeChanged = changed)
+    }
+}
