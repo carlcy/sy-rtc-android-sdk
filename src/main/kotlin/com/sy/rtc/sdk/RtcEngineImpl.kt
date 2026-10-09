@@ -612,7 +612,8 @@ internal class RtcEngineImpl(
                     muteRemoteAudioStream(target, muted)
                 }
             }
-            "user-list" -> {
+            // Go hub acks join with "joined"/"resumed" + data.peers; legacy hub sent "user-list" + data.users.
+            "user-list", "joined", "resumed" -> {
                 val elapsed = (System.currentTimeMillis() - joinStartTime).toInt().coerceAtLeast(0)
                 when (reconnectTracker.onConnected()) {
                     RejoinSignal.REJOINED -> {
@@ -627,7 +628,7 @@ internal class RtcEngineImpl(
                     // renewToken 等主动重连信令：不重复回调 onJoinChannelSuccess。
                     RejoinSignal.NONE -> {}
                 }
-                val usersAny = data["users"]
+                val usersAny = data["users"] ?: data["peers"]
                 val users: List<String> = when (usersAny) {
                     is org.json.JSONArray -> (0 until usersAny.length()).mapNotNull { idx -> usersAny.optString(idx)?.takeIf { it.isNotBlank() } }
                     is List<*> -> usersAny.mapNotNull { it?.toString()?.takeIf { s -> s.isNotBlank() } }
