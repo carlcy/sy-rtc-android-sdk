@@ -188,6 +188,47 @@ internal class RtcEngineImpl(
     
     // 事件处理器（需要从外部设置）
     var eventHandler: RtcEventHandler? = null
+
+    // ---- LiveKit SFU media plane: used when join()/renewToken() get meta JSON with
+    // mediaWired=true + sfuUrl + sfuToken. Signaling keeps business events and the roster.
+    private var sfuSession: LiveKitMediaSession? = null
+    private val sfuMode: Boolean get() = sfuSession != null
+    private val kickedOnce = OnceFlag()
+    @Volatile private var lastLocalServerMute: Boolean? = null
+    private var sfuReconnectAttempts = 0
+    private val SFU_MAX_RECONNECT = 3
+    private var localVideoContainerRef: java.lang.ref.WeakReference<android.view.ViewGroup>? = null
+    private val sfuSink = object : SfuSink {
+        // Remote mute state already arrives over signaling (client-mute / mute-audio).
+        override fun remoteAudioMuted(uid: String, muted: Boolean) {}
+        override fun remoteVideoMuted(uid: String, muted: Boolean) {}
+        override fun serverMutedLocalAudio(muted: Boolean) {
+            if (muted) localAudioTrack?.setEnabled(false)
+            notifyLocalServerMute(muted)
+        }
+        override fun kicked(reason: String) {
+            val ch = currentChannelId ?: return
+            notifyKicked(ch, reason)
+            leave()
+        }
+        override fun mediaLost(detail: String) = onSfuLost(detail)
+        override fun networkQuality(uid: String, quality: String) {
+            eventHandler?.onNetworkQuality(uid, quality, quality)
+        }
+        override fun levels(local: Int?, remote: Map<String, Int>) {
+            if (local != null) { localPcmVolume = local; localPcmSeen = true }
+            remote.forEach { (u, v) -> remotePcmVolume[u] = v; remotePcmSeen.add(u) }
+        }
+        override fun reconnecting() {
+            eventHandler?.onReconnecting("sfu", 1, 1, 0)
+            eventHandler?.onConnectionStateChanged("reconnecting", "sfu_reconnecting")
+        }
+        override fun reconnected() {
+            eventHandler?.onReconnected("sfu")
+            eventHandler?.onConnectionStateChanged("connected", "sfu_reconnected")
+        }
+    }
+    private val sfuMapper = SfuEventMapper(sfuSink)
     
     // 信令客户端
     private var signalingClient: SignalingClient? = null
@@ -326,8 +367,8 @@ internal class RtcEngineImpl(
     
     // ==================== 频道管理 ====================
     
-    fun join(channelId: String, uid: String, token: String) {
-        if (channelId.isBlank() || uid.isBlank() || token.isBlank()) {
+    fun join(channelId: String, uid: String, tokenInput: String) {
+        if (channelId.isBlank() || uid.isBlank() || tokenInput.isBlank()) {
             Log.e(TAG, "join 参数不能为空: channelId/uid/token")
             eventHandler?.onError(RtcErrorCode.INVALID_ARGUMENT, "channelId/uid/token 不能为空")
             return
@@ -338,9 +379,15 @@ internal class RtcEngineImpl(
             return
         }
         
+        // tokenInput: plain SY token, or the meta=true JSON (token + sfuUrl/sfuToken).
+        val creds = JoinCredentials.parse(tokenInput)
+        val token = creds.token
         currentChannelId = channelId
         currentUid = uid
         currentToken = token
+        kickedOnce.reset()
+        lastLocalServerMute = null
+        sfuReconnectAttempts = 0
         reconnectTracker.reset()
         iceRecoveryPending.set(false)
         iceLostPeers.clear()
@@ -369,16 +416,88 @@ internal class RtcEngineImpl(
             startStatsPoll()
             scheduleTokenPrivilegeWatch(token)
             
-            // 创建音频轨道
-            val audioSource = peerConnectionFactory?.createAudioSource(org.webrtc.MediaConstraints())
-            localAudioTrack = peerConnectionFactory?.createAudioTrack("audio_track", audioSource)
-            localAudioTrack?.setEnabled(!localAudioMuted && clientRole.canPublish())
-            attachLocalVolumeSink()
+            val sfu = creds.sfu
+            if (sfu != null) {
+                // 媒体走 LiveKit：麦克风/摄像头由 LiveKit 采集，不再建 org.webrtc 本地轨道。
+                startSfuSession(sfu, uid)
+            } else {
+                // 创建音频轨道
+                val audioSource = peerConnectionFactory?.createAudioSource(org.webrtc.MediaConstraints())
+                localAudioTrack = peerConnectionFactory?.createAudioTrack("audio_track", audioSource)
+                localAudioTrack?.setEnabled(!localAudioMuted && clientRole.canPublish())
+                attachLocalVolumeSink()
+            }
         } catch (e: Exception) {
             Log.e(TAG, "加入频道失败", e)
         }
     }
     
+    private fun wantsLocalVideo(): Boolean =
+        isVideoEnabled.get() && (isLocalVideoEnabled.get() || isPreviewing.get()) && !localVideoMuted
+
+    private fun findContainer(viewId: Int): android.view.ViewGroup? =
+        (context as? android.app.Activity)?.findViewById(viewId)
+
+    /** onKicked 每次 join 只回调一次（LiveKit removed、信令 kicked、成员轮询可能同时到）。 */
+    private fun notifyKicked(channelId: String, reason: String): Boolean {
+        if (!kickedOnce.tryFire()) return false
+        eventHandler?.onKicked(channelId, reason)
+        return true
+    }
+
+    /** 本端被服务端静音/解除：只在状态变化时回调；SDK 不会自动恢复麦克风。 */
+    private fun notifyLocalServerMute(muted: Boolean) {
+        if (lastLocalServerMute == muted) return
+        lastLocalServerMute = muted
+        eventHandler?.onServerMuteAudio(currentUid ?: "", muted)
+    }
+
+    private fun startSfuSession(sfu: SfuJoinInfo, uid: String) {
+        val publish = clientRole.canPublish()
+        val camera = publish && wantsLocalVideo()
+        // 预览用的是 org.webrtc 摄像头；进房后摄像头交给 LiveKit。
+        if (isPreviewing.get()) stopPreview()
+        sfuMapper.localAudioMuteRequested = localAudioMuted || !publish
+        val session = LiveKitMediaSession(context, uid, sfuMapper, object : LiveKitMediaSession.Callbacks {
+            override fun onConnected(reconnect: Boolean) {
+                sfuReconnectAttempts = 0
+                if (reconnect) {
+                    eventHandler?.onReconnected("sfu")
+                    eventHandler?.onConnectionStateChanged("connected", "sfu_reconnected")
+                }
+            }
+            override fun onConnectFailed(error: Throwable) = onSfuLost(error.message ?: "sfu connect failed")
+            override fun onFirstRemoteVideo(uid: String) {
+                val elapsed = (System.currentTimeMillis() - joinStartTime).toInt().coerceAtLeast(0)
+                eventHandler?.onRemoteVideoStateChanged(uid, "decoding", "sfu_track_subscribed", elapsed)
+            }
+        })
+        sfuSession = session
+        (localVideoContainerRef?.get() ?: videoViews["local"]?.let { findContainer(it) })?.let { session.attachLocal(it) }
+        pendingRemoteContainers.forEach { (u, ref) -> ref.get()?.let { session.attachRemote(u, it) } }
+        Log.d(TAG, "媒体走 LiveKit: room=${sfu.room} identity=${sfu.identity} publish=$publish camera=$camera")
+        session.connect(sfu, publishMic = publish && !localAudioMuted, publishCamera = camera)
+    }
+
+    /** LiveKit 非踢人原因断开：用当前 sfuToken 重连，最多 3 次（1s/2s/4s）。 */
+    private fun onSfuLost(detail: String) {
+        val session = sfuSession ?: return
+        if (!isJoined.get()) return
+        sfuReconnectAttempts++
+        if (sfuReconnectAttempts > SFU_MAX_RECONNECT) {
+            eventHandler?.onReconnectFailed("sfu")
+            eventHandler?.onConnectionStateChanged("failed", "sfu_lost")
+            eventHandler?.onError(RtcErrorCode.RECONNECT_FAILED, "媒体连接失败: $detail")
+            return
+        }
+        val delayMs = 1000L shl (sfuReconnectAttempts - 1)
+        eventHandler?.onReconnecting("sfu", sfuReconnectAttempts, SFU_MAX_RECONNECT, delayMs)
+        eventHandler?.onConnectionStateChanged("reconnecting", "sfu_lost")
+        mainHandler.postDelayed({
+            if (sfuSession === session && isJoined.get()) session.reconnect()
+        }, delayMs)
+    }
+
     fun leave() {
         if (!isJoined.get()) {
             Log.w(TAG, "未加入频道")
@@ -400,6 +519,9 @@ internal class RtcEngineImpl(
             // 断开信令连接
             signalingClient?.disconnect()
             signalingClient = null
+            sfuSession?.disconnect()
+            sfuSession = null
+            sfuReconnectAttempts = 0
             
             // 关闭所有 PeerConnection
             peerConnections.values.forEach { peerConnection ->
@@ -456,20 +578,23 @@ internal class RtcEngineImpl(
     
     private fun handleSignalingMessage(type: String, data: Map<String, Any>, channelId: String) {
         Log.d(TAG, "处理信令消息: type=$type")
+        // SFU 模式下媒体不走 P2P：忽略 offer/answer/ICE。
+        if (sfuMode && (type == "offer" || type == "answer" || type == "ice-candidate")) return
         
         when (type) {
             "kicked" -> {
                 val reason = (data["reason"] as? String) ?: "kicked"
                 Log.w(TAG, "被踢出频道: $reason")
-                eventHandler?.onKicked(channelId, reason)
-                eventHandler?.onError(RtcErrorCode.forKicked(data), "kicked: $reason")
+                if (notifyKicked(channelId, reason)) {
+                    eventHandler?.onError(RtcErrorCode.forKicked(data), "kicked: $reason")
+                }
                 leave()
             }
             "user-kicked" -> {
                 val kickedUid = (data["uid"] as? String) ?: return
                 if (kickedUid == currentUid) {
                     val reason = (data["reason"] as? String) ?: "user-kicked"
-                    eventHandler?.onKicked(channelId, reason)
+                    notifyKicked(channelId, reason)
                     leave()
                 } else {
                     eventHandler?.onUserOffline(kickedUid, "kicked")
@@ -479,9 +604,10 @@ internal class RtcEngineImpl(
             "mute-audio", "unmute-audio" -> {
                 val target = (data["uid"] as? String) ?: return
                 val muted = type == "mute-audio" || (data["mutedAudio"] as? Boolean) == true
-                eventHandler?.onServerMuteAudio(target, muted)
                 if (target == currentUid) {
+                    notifyLocalServerMute(muted)
                     localAudioTrack?.setEnabled(!muted)
+                    if (muted) sfuSession?.setMicrophoneEnabled(false)
                 } else {
                     muteRemoteAudioStream(target, muted)
                 }
@@ -509,6 +635,7 @@ internal class RtcEngineImpl(
                 }
                 users.filter { it != currentUid }.forEach { remote ->
                     eventHandler?.onUserJoined(remote, 0)
+                    if (sfuMode) return@forEach
                     ensurePeer(remote, channelId)
                     if (shouldInitiateOffer(currentUid, remote)) {
                         startOffer(remote, channelId)
@@ -613,7 +740,9 @@ internal class RtcEngineImpl(
                 val uid = data["uid"] as? String
                 if (uid != null) {
                     eventHandler?.onUserJoined(uid, 0)
-                    if (uid != currentUid) {
+                    if (uid != currentUid && sfuMode) {
+                        republishSideInfo()
+                    } else if (uid != currentUid) {
                         republishSideInfo()
                         ensurePeer(uid, channelId)
                         if (shouldInitiateOffer(currentUid, uid)) {
@@ -834,6 +963,12 @@ internal class RtcEngineImpl(
         val publish = role.canPublish()
         localAudioTrack?.setEnabled(publish && !localAudioMuted)
         localVideoTrack?.setEnabled(publish && !localVideoMuted)
+        // audience 的 sfuToken 没有发布权限；切到可发布角色需要重新取 Token 再 renewToken。
+        sfuSession?.let { s ->
+            sfuMapper.localAudioMuteRequested = !publish || localAudioMuted
+            s.setMicrophoneEnabled(publish && !localAudioMuted)
+            s.setCameraEnabled(publish && wantsLocalVideo())
+        }
     }
 
     private var channelProfile: String = "communication"
@@ -1104,6 +1239,10 @@ internal class RtcEngineImpl(
     
     fun enableLocalAudio(enabled: Boolean) {
         localAudioTrack?.setEnabled(enabled && !localAudioMuted && clientRole.canPublish())
+        sfuSession?.let { s ->
+            sfuMapper.localAudioMuteRequested = !enabled || localAudioMuted
+            s.setMicrophoneEnabled(enabled && !localAudioMuted && clientRole.canPublish())
+        }
         Log.d(TAG, "启用/禁用本地音频: $enabled")
     }
     
@@ -1119,6 +1258,8 @@ internal class RtcEngineImpl(
         try {
             localAudioMuted = muted
             localAudioTrack?.setEnabled(!muted && clientRole.canPublish())
+            sfuMapper.localAudioMuteRequested = muted
+            sfuSession?.setMicrophoneEnabled(!muted && clientRole.canPublish())
             eventHandler?.onLocalAudioStateChanged(if (muted) "muted" else "recording", "")
             publishClientMute("audio", muted)
             Log.d(TAG, "本地音频静音: $muted")
@@ -1177,11 +1318,15 @@ internal class RtcEngineImpl(
     
     // ==================== Token刷新 ====================
     
-    fun renewToken(token: String) {
-        if (token.isBlank()) {
+    fun renewToken(tokenInput: String) {
+        if (tokenInput.isBlank()) {
             eventHandler?.onError(RtcErrorCode.INVALID_ARGUMENT, "token 不能为空")
             return
         }
+        // 续期返回的 meta JSON 同时带新的 sfuToken（过期时间与 SY Token 一致）。
+        val creds = JoinCredentials.parse(tokenInput)
+        val token = creds.token
+        creds.sfu?.let { sfuSession?.updateCredentials(it) }
         // 媒体 PeerConnection 保持不动。信令 URL 的 ?token= 必须换成新 Token，
         // 否则 onTokenPrivilegeWillExpire 之后服务端会拒绝这条 WebSocket。
         currentToken = token
@@ -1389,6 +1534,7 @@ internal class RtcEngineImpl(
     
     fun enableLocalVideo(enabled: Boolean) {
         isLocalVideoEnabled.set(enabled)
+        sfuSession?.setCameraEnabled(clientRole.canPublish() && wantsLocalVideo())
         Log.d(TAG, "启用本地视频: $enabled")
     }
     
@@ -1634,6 +1780,7 @@ internal class RtcEngineImpl(
         localVideoMuted = muted
         videoMutedStates["local"] = muted
         localVideoTrack?.setEnabled(!muted && clientRole.canPublish())
+        sfuSession?.setCameraEnabled(clientRole.canPublish() && wantsLocalVideo())
         eventHandler?.onLocalVideoStateChanged(if (muted) "muted" else "capturing", "")
         publishClientMute("video", muted)
         Log.d(TAG, "本地视频静音: $muted")
@@ -1657,6 +1804,10 @@ internal class RtcEngineImpl(
     
     fun setupLocalVideo(viewId: Int) {
         videoViews["local"] = viewId
+        if (sfuMode) {
+            mainHandler.post { findContainer(viewId)?.let { sfuSession?.attachLocal(it) } }
+            return
+        }
         Log.d(TAG, "设置本地视频视图: $viewId")
         android.os.Handler(android.os.Looper.getMainLooper()).post {
             bindLocalVideoToView(viewId)
@@ -1677,6 +1828,11 @@ internal class RtcEngineImpl(
 
     fun setupLocalVideo(container: android.view.ViewGroup) {
         videoViews["local"] = container.id
+        localVideoContainerRef = java.lang.ref.WeakReference(container)
+        if (sfuMode) {
+            mainHandler.post { sfuSession?.attachLocal(container) }
+            return
+        }
         Log.d(TAG, "设置本地视频 ViewGroup")
         android.os.Handler(android.os.Looper.getMainLooper()).post {
             bindLocalVideoToContainer(container)
@@ -1741,6 +1897,10 @@ internal class RtcEngineImpl(
     
     fun setupRemoteVideo(uid: String, viewId: Int) {
         videoViews[uid] = viewId
+        if (sfuMode) {
+            mainHandler.post { findContainer(viewId)?.let { sfuSession?.attachRemote(uid, it) } }
+            return
+        }
         Log.d(TAG, "设置远端视频视图: uid=$uid, viewId=$viewId")
         val remoteTrack = remoteVideoTracks[uid]
         if (remoteTrack != null) {
@@ -1758,6 +1918,10 @@ internal class RtcEngineImpl(
         val remoteTrack = remoteVideoTracks[uid]
         // remember container for late bind
         pendingRemoteContainers[uid] = java.lang.ref.WeakReference(container)
+        if (sfuMode) {
+            mainHandler.post { sfuSession?.attachRemote(uid, container) }
+            return
+        }
         if (remoteTrack != null) {
             android.os.Handler(android.os.Looper.getMainLooper()).post {
                 bindRemoteVideoToContainer(uid, remoteTrack, container)
@@ -2904,6 +3068,10 @@ internal class RtcEngineImpl(
         val task = object : Runnable {
             override fun run() {
                 if (!isJoined.get()) return
+                if (sfuMode) {
+                    mainHandler.postDelayed(this, 2000)
+                    return
+                }
                 val peers = peerConnections.filterKeys { it != "default" }
                 if (peers.isEmpty()) {
                     eventHandler?.onNetworkQuality(
@@ -3328,13 +3496,14 @@ internal class RtcEngineImpl(
                         return@getMemberState
                     }
                     if (state.kicked) {
-                        eventHandler?.onKicked(ch, state.kickReason.ifBlank { "polled-kicked" })
+                        notifyKicked(ch, state.kickReason.ifBlank { "polled-kicked" })
                         leave()
                         return@getMemberState
                     }
                     if (state.mutedAudio) {
                         localAudioTrack?.setEnabled(false)
-                        eventHandler?.onServerMuteAudio(u, true)
+                        sfuSession?.setMicrophoneEnabled(false)
+                        notifyLocalServerMute(true)
                     }
                     if (isJoined.get()) {
                         memberPollHandler?.postDelayed(this, 5000)

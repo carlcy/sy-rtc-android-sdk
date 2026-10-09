@@ -92,10 +92,14 @@ class RtcEngine private constructor() {
 
     /**
      * 加入频道
-     * 
+     *
+     * `token` 可以是纯 RTC Token，也可以是 `POST /api/rtc/token`（`meta=true`）返回的 JSON
+     * （`data` 对象或整个 `{code,data}`）。JSON 里 `mediaWired=true` 且带 `sfuUrl` / `sfuToken` 时，
+     * 音视频走 LiveKit 媒体服务器；否则沿用 P2P。信令（踢人、静音、消息、成员列表）两种模式相同。
+     *
      * @param channelId 频道ID
      * @param uid 用户ID
-     * @param token 鉴权Token
+     * @param token RTC Token，或 meta=true 的 JSON
      */
     fun join(channelId: String, uid: String, token: String) {
         impl?.join(channelId, uid, token)
@@ -291,6 +295,7 @@ class RtcEngine private constructor() {
      *
      * 已在频道内时会用新 Token 重连信令（URL `?token=`），不发送 leave，也不拆掉媒体连接。
      * 收到 [RtcEventHandler.onTokenPrivilegeWillExpire] 后，向业务后端重新要 Token，再调用本方法。
+     * 走 LiveKit 时传续期接口返回的 meta JSON，新的 `sfuToken` 会用于之后的媒体重连。
      */
     fun renewToken(token: String) {
         impl?.renewToken(token)

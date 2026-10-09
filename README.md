@@ -154,6 +154,24 @@ rooms.renewToken(channelId, uid) { newToken, error ->
 
 `RoomService.renewToken` 对应 `POST /api/rtc/token/renew`。`RtcEngine.renewToken` 用新 Token 重连信令，不发送 leave，也不拆掉当前媒体连接。拉 Token 和续期若返回 4031 / 4032 / 4033，callback 的异常是 `RtcCredentialException`。
 
+### 7. 媒体服务器（LiveKit）
+
+服务端配置了 LiveKit 节点时，拉 Token 带 `meta=true`，把返回的 JSON 原样交给 `join`：
+
+```kotlin
+rooms.getToken(channelId, uid, role = "publisher", meta = true) { metaJson, error ->
+    if (metaJson != null) engine.join(channelId, uid, metaJson)
+}
+```
+
+- JSON 里 `mediaWired=true` 且有 `sfuUrl` / `sfuToken` 时，麦克风、摄像头、远端音视频都走 LiveKit；没有时自动用 P2P，调用方式不变。
+- 续期同样带 `meta = true`，把 JSON 交给 `engine.renewToken`；新的 `sfuToken` 用于之后的媒体重连。
+- 服务端踢人（LiveKit removed by server）和信令 `kicked` 只回调一次 `onKicked`。
+- 服务端静音本端时回调 `onServerMuteAudio(本端uid, true)`，SDK 不会自动打开麦克风。
+- `audience` 的 `sfuToken` 没有发布权限。切到可发布角色要重新取 Token 再 `renewToken`。
+- 网络质量取自 LiveKit 的连接质量（`excellent` / `good` / `poor` / `down`），音量取自 LiveKit 音频电平。
+- 目前只在 P2P 下可用：屏幕共享、自定义视频源与美颜处理、`createDataStream`、SEI、伴奏混入上行。
+
 换画质：本地编码用 `engine.setVideoQuality("hd")`（`audio` | `sd` | `hd` | `fhd`）。控制面档位用用户 JWT 调用 `rooms.switchQualityTier(channelId, "hd")`（`POST /api/rtc/quality/switch`）。若响应里带了新 Token，再 `engine.renewToken`。
 
 ## 示例工程
