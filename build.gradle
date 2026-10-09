@@ -73,6 +73,8 @@ dependencies {
     // implementation 'androidx.opengl:opengl:1.0.0' // 这个包不存在，使用系统 OpenGL
     
     testImplementation 'junit:junit:4.13.2'
+    // real org.json for unit tests (android.jar stubs return defaults)
+    testImplementation 'org.json:json:20240303'
     androidTestImplementation 'androidx.test.ext:junit:1.1.5'
     androidTestImplementation 'androidx.test.espresso:espresso-core:3.5.1'
 }
