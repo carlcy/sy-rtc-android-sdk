@@ -1,5 +1,14 @@
 # SY RTC Android SDK 更新日志
 
+## 3.3.0
+
+- LiveKit 媒体面：`join` / `renewToken` 除了普通 Token，也接受 `POST /api/server/rtc/token`（`meta=true`）返回的整段 JSON。`mediaWired=true` 且带 `sfuUrl` / `sfuToken` 时，麦克风、摄像头、远端音视频走 LiveKit（`io.livekit:livekit-android` 2.29.0，WebRTC 带前缀，不与 `org.webrtc` 冲突），否则仍是 P2P，调用方式不变。新增 `JoinCredentials`。
+- LiveKit 事件映射（`SfuEventMapper`）：被服务端移出 / 房间删除 / 重复身份 → `onKicked`，信令 kicked 与 LiveKit removed 同时到达时每次进房只回调一次；服务端静音本端 → `onServerMuteAudio`（SDK 不自动开麦）；网络质量与音量来自 LiveKit；非踢人断开按 1s/2s/4s 重连 3 次，原因 `sfu_lost` / `sfu_reconnecting` / `sfu_reconnected`。
+- 修：对接 Go 后端时 `onJoinChannelSuccess` 不回调（信令 `joined` / `resumed` 的 `data.peers` 按 `user-list` 处理）。
+- 只在 P2P 下可用：屏幕共享、自定义视频源与美颜、数据流、SEI、频道内录音、伴奏混入上行。
+- 依赖：宿主仓库需要 `https://jitpack.io`（LiveKit 的 audioswitch 也在 JitPack）。
+- androidTest：可选的 LiveKit E2E（`-Pandroid.testInstrumentationRunnerArguments.sfuMeta=...`），不传参数时跳过。
+
 ## 3.2.2
 
 - 版本对齐发布：Android、iOS（SyRtcSDK）、Flutter（sy_rtc_flutter_sdk）统一为 3.2.2。Android 代码与 v3.2.0 相同，仅 `RtcEngine.VERSION` / `VERSION` / Demo `versionName` 改为 3.2.2。

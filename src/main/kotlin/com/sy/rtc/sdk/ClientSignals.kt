@@ -6,7 +6,7 @@ package com.sy.rtc.sdk
  * 这些结果来自本机 WebRTC 统计、PCM 或信令消息，不是 SFU 探测，也不是码流内 SEI。
  */
 object SdkInfo {
-    const val VERSION = "3.2.2"
+    const val VERSION = "3.3.0"
 }
 
 object AudioRoute {

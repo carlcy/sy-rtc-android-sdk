@@ -19,8 +19,8 @@ class RtcEngine private constructor() {
 
     companion object {
         /**
-         * 与仓库 `VERSION`、Demo `versionName` 相同，当前为 3.2.2。
-         * JitPack 坐标使用 `v3.2.2`。
+         * 与仓库 `VERSION`、Demo `versionName` 相同，当前为 3.3.0。
+         * JitPack 坐标使用 `v3.3.0`。
          */
         const val VERSION = SdkInfo.VERSION
 

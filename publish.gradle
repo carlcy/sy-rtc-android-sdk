@@ -5,7 +5,7 @@
 //
 // Maven Central（可选）发版前在 gradle.properties 或环境变量覆盖：
 //   POM_GROUP_ID=io.github.carlcy
-//   POM_VERSION=3.2.2          （不要带 v 前缀）
+//   POM_VERSION=3.3.0          （不要带 v 前缀）
 //   POM_ARTIFACT_ID=sy-rtc-android-sdk
 
 def versionFile = rootProject.file("VERSION")
