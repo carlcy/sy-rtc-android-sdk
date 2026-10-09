@@ -44,6 +44,10 @@ dependencies {
     // 提供 org.webrtc.* API
     implementation 'io.github.webrtc-sdk:android:125.6422.07'
     
+    // LiveKit SFU 媒体面（Token 带 sfuUrl/sfuToken 时使用）。内部是带前缀的 WebRTC（livekit.org.webrtc），
+    // 与上面的 org.webrtc 不冲突。audioswitch 来自 JitPack。
+    implementation 'io.livekit:livekit-android:2.29.0'
+
     // OkHttp for WebSocket signaling
     implementation 'com.squareup.okhttp3:okhttp:4.12.0'
     
